@@ -1,0 +1,25 @@
+# Secrets and environment variables
+.env
+*.env
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# IDEs & OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary Office / LibreOffice lock files
+.~lock.*#
+~$*
