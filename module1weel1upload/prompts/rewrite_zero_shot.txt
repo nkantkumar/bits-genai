@@ -1,0 +1,11 @@
+Rewrite the following customer message in a professional and polite
+customer-support style.
+
+Make the message clear, grammatically correct, and professional.
+
+Preserve the original meaning.
+
+Return only the rewritten message.
+
+Input:
+{text}

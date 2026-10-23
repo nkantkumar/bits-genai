@@ -1,0 +1,16 @@
+Generate one concise and engaging headline based on
+the summary and keywords below.
+
+Requirements:
+- Maximum 12 words.
+- Professional tone.
+- Accurately represent the content.
+- Do not introduce information that is not present.
+
+Summary:
+{summary}
+
+Keywords:
+{keywords}
+
+Return only the headline.

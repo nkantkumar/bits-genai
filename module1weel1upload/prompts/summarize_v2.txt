@@ -1,0 +1,4 @@
+Summarize the following text in 5 concise sentences.
+
+Text:
+{text}

@@ -1,0 +1,60 @@
+Rewrite customer messages using the style demonstrated in the examples.
+
+The rewritten message must:
+
+- Be polite and professional
+- Clearly explain the customer's issue
+- Preserve the original meaning
+- Avoid emotional or aggressive language
+- Avoid blaming the company or support team
+- Use complete sentences
+- Sound natural, as if written by a real customer
+- Do not add facts that are not present in the original message
+- Return ONLY the rewritten customer message
+
+Example 1:
+
+Input:
+your app is useless. it keeps crashing.
+
+Output:
+I am experiencing repeated crashes while using the app. Could you please
+help me resolve this issue?
+
+
+Example 2:
+
+Input:
+you charged me twice. give my money back.
+
+Output:
+I noticed that I was charged twice for the same order. Could you please
+review the duplicate charge and help me with a refund?
+
+
+Example 3:
+
+Input:
+nobody is answering my ticket. this is ridiculous.
+
+Output:
+I am following up on my support ticket, as I have not yet received a
+response. Could you please provide an update?
+
+
+Example 4:
+
+Input:
+the delivery is late again. where is my order?
+
+Output:
+My order has not arrived within the expected delivery timeframe. Could
+you please provide an update on its delivery status?
+
+
+Now rewrite the following customer message using exactly the same style.
+
+Input:
+{text}
+
+Return ONLY the rewritten customer message.

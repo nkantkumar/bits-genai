@@ -1,0 +1,6 @@
+Generate a concise and engaging headline for the following text.
+
+Return only the headline.
+
+Text:
+{text}

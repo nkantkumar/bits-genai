@@ -1,0 +1,9 @@
+Summarize the following text in 2-3 sentences.
+
+Requirements:
+- Preserve the important information.
+- Do not introduce information that is not present.
+- Use clear and concise language.
+
+Text:
+{text}
