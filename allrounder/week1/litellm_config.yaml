@@ -40,22 +40,14 @@ litellm_settings:
   cache: true
 
   cache_params:
-    # Options:
-    # - "redis-semantic": High-performance semantic vector caching via Redis Stack
-    # - "redis": Exact-match Redis caching
-    # - "local": In-memory caching for local testing
     type: "redis-semantic"
-    host: os.environ/REDIS_HOST
-    port: 6379
-    password: os.environ/REDIS_PASSWORD
+    redis_url: os.environ/REDIS_URL
 
     # Similarity Threshold (0.0 to 1.0)
-    # 0.85 = high precision match for semantically identical questions
     similarity_threshold: 0.85
 
-    # Model used to calculate semantic embeddings
-    embedding_model: "text-embedding-3-small"
+    # Correct LiteLLM parameter name for semantic embedding model
+    redis_semantic_cache_embedding_model: "text-embedding-3-small"
 
-    # Cache namespace and TTL (Time-To-Live in seconds, e.g., 24 hours)
+    # Cache namespace and TTL
     namespace: "ai_gateway_cache"
-    supported_call_types: ["completion", "acompletion"]
