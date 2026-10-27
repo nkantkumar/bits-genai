@@ -12,9 +12,20 @@ Model aliases "cheap" and "smart" are defined in the proxy's config.yaml.
 """
 import os
 import re
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# Ensure week1 is on sys.path for local module imports
+WEEK1_DIR = Path(__file__).resolve().parent
+if str(WEEK1_DIR) not in sys.path:
+    sys.path.insert(0, str(WEEK1_DIR))
+
+from SemanticCache import SemanticCache
+
+# Initialize Semantic & Prompt Cache (threshold 0.80 for semantic similarity)
+router_cache = SemanticCache(similarity_threshold=0.80)
 
 # Load environment variables (.env from allrounder or root)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -99,23 +110,42 @@ def ask_with_cascade(prompt: str) -> tuple[str, str]:
     return text, r.model
 
 
-# --- Main entry point -------------------------------------------------------
-def ask(prompt: str, strategy: str = "rules") -> tuple[str, str]:
-    if strategy == "cascade":
-        return ask_with_cascade(prompt)
+# --- Main entry point (With Semantic & Prompt Caching) ----------------------
+def ask(prompt: str, strategy: str = "rules", use_cache: bool = True) -> tuple[str, str]:
+    # 1. Check Cache First (Saves classification & LLM call if similar query exists)
+    if use_cache:
+        cached_resp, hit_type, score = router_cache.get(prompt, model="router")
+        if cached_resp is not None:
+            return cached_resp, f"cache ({hit_type}, sim={score:.2f})"
 
-    chosen = classify_by_llm(prompt) if strategy == "llm" else classify_by_rules(prompt)
-    r = client.chat.completions.create(
-        model=chosen, messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content or "", r.model
+    # 2. Cache Miss: Execute Router
+    if strategy == "cascade":
+        answer, model_used = ask_with_cascade(prompt)
+    else:
+        chosen = classify_by_llm(prompt) if strategy == "llm" else classify_by_rules(prompt)
+        r = client.chat.completions.create(
+            model=chosen, messages=[{"role": "user", "content": prompt}]
+        )
+        answer, model_used = r.choices[0].message.content or "", r.model
+
+    # 3. Save to Cache for subsequent exact or semantic queries
+    if use_cache:
+        router_cache.set(prompt, answer, model="router")
+
+    return answer, model_used
 
 
 if __name__ == "__main__":
     print(f"[Gateway]: LiteLLM proxy at {base_url}\n")
 
     prompts = [
+        # Query 1: Cold call (cheap)
         "What is the capital of Japan?",
+        # Query 2: Exact Repeat -> Prompt Cache Hit (0ms)
+        "What is the capital of Japan?",
+        # Query 3: Semantic Equivalent -> Semantic Cache Hit
+        "Can you tell me Japan's capital city?",
+        # Query 4: Cold call (smart)
         "Analyze the trade-offs between microservices and a monolith for a 5-person "
         "startup, step by step, and recommend an architecture. Why? What would change at 50 people?",
     ]
@@ -123,4 +153,4 @@ if __name__ == "__main__":
         answer, model_used = ask(p, strategy="rules")
         print(f"Q: {p[:60]}...")
         print(f"-> routed to: {model_used}")
-        print(f"A: {answer[:150]}\n")
+        print(f"A: {answer[:120]}...\n")

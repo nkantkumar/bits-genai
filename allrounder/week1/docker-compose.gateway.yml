@@ -1,12 +1,14 @@
 services:
-  # 1. Reverse Proxy Layer (Edge / Ingress)
-  # Handles TLS termination, IP-based rate limiting, DDoS buffer, and SSE stream pass-through
+  # -----------------------------------------------------------------------------
+  # 1. Edge Reverse Proxy (Nginx)
+  # - TLS termination, IP-based rate limiting, DDoS buffer, and SSE stream pass-through
+  # -----------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
     container_name: ai_gateway_nginx
     restart: unless-stopped
     ports:
-      - "8080:80"      # Public entry point (Change to "80:80" and "443:443" in production)
+      - "8080:80"      # Public entry point (80/443 in production)
     volumes:
       - ./nginx.docker.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -14,17 +16,47 @@ services:
     networks:
       - ai_gateway_net
 
+  # -----------------------------------------------------------------------------
   # 2. AI Gateway Layer (LiteLLM)
-  # Handles model routing, virtual keys, budgets, caching, retry/fallbacks
-  # NOTE: Port 4000 is NOT exposed publicly on host - only accessible via nginx
+  # - Model routing ("cheap" vs "smart"), virtual keys, budgets, retry/fallbacks
+  # - Exact Match & Semantic Vector Caching enabled via config.yaml
+  # -----------------------------------------------------------------------------
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
     container_name: ai_gateway_litellm
     restart: unless-stopped
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       - STORE_MODEL_IN_DB=True
       - LITELLM_MASTER_KEY=${LITELLM_API_KEY:-sk-master-key-here}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_gateway_net
+
+  # -----------------------------------------------------------------------------
+  # 3. Cache & Vector Store (Redis Stack with Vector Search)
+  # - Powers exact prompt caching and semantic vector similarity search
+  # -----------------------------------------------------------------------------
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: ai_gateway_redis
+    restart: unless-stopped
+    environment:
+      - REDIS_ARGS=--save 60 1 --loglevel notice
+    ports:
+      - "6379:6379"    # Expose for local testing/monitoring
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - ai_gateway_net
 

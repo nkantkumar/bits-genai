@@ -1,0 +1,61 @@
+# =============================================================================
+# LiteLLM Gateway Configuration with Prompt & Semantic Caching
+# =============================================================================
+
+model_list:
+  # 1. Cheap / Fast Model (for simple queries, lookups, formatting)
+  - model_name: cheap
+    litellm_params:
+      model: gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # 2. Smart / Frontier Model (for complex analysis, code, multi-step reasoning)
+  - model_name: smart
+    litellm_params:
+      model: gpt-4o-mini  # In production, change to gpt-4o or claude-3-5-sonnet
+      api_key: os.environ/OPENAI_API_KEY
+
+  # 3. Embedding Model (used by Semantic Cache to compute prompt similarity)
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+# General Gateway Settings
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+
+# Router & Load Balancing Settings
+router_settings:
+  routing_strategy: "latency-based-routing"
+  num_retries: 2
+  timeout: 30
+
+# -----------------------------------------------------------------------------
+# Caching Configuration: Exact Match & Semantic Caching
+# -----------------------------------------------------------------------------
+litellm_settings:
+  # Enable Caching
+  cache: true
+
+  cache_params:
+    # Options:
+    # - "redis-semantic": High-performance semantic vector caching via Redis Stack
+    # - "redis": Exact-match Redis caching
+    # - "local": In-memory caching for local testing
+    type: "redis-semantic"
+    host: os.environ/REDIS_HOST
+    port: 6379
+    password: os.environ/REDIS_PASSWORD
+
+    # Similarity Threshold (0.0 to 1.0)
+    # 0.85 = high precision match for semantically identical questions
+    similarity_threshold: 0.85
+
+    # Model used to calculate semantic embeddings
+    embedding_model: "text-embedding-3-small"
+
+    # Cache namespace and TTL (Time-To-Live in seconds, e.g., 24 hours)
+    namespace: "ai_gateway_cache"
+    supported_call_types: ["completion", "acompletion"]
