@@ -23,3 +23,7 @@ __pycache__/
 # Temporary Office / LibreOffice lock files
 .~lock.*#
 ~$*
+
+# Logs
+*.log
+logs/

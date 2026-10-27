@@ -1,0 +1,42 @@
+# =============================================================================
+# Caddy Reverse Proxy for AI Gateway
+# Architecture: Internet -> Caddy (TLS, Rate Limits) -> LiteLLM (Routing) -> LLMs
+# =============================================================================
+
+# Port 8080 for local development (or change to your domain for auto-HTTPS: e.g. api.yourdomain.com)
+:8080 {
+    # Structured access logs
+    log {
+        output file logs/caddy.log
+        format json
+    }
+
+    # Direct Health Check
+    respond /healthz `{"status": "healthy", "service": "caddy-ai-reverse-proxy"}` 200
+
+    # CORS Headers for web consumers
+    header {
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Allow-Headers "Authorization, Content-Type, x-litellm-user-id"
+        X-Reverse-Proxy-By "Caddy-AI-Gateway"
+    }
+
+    # Reverse proxy all requests to LiteLLM Proxy
+    reverse_proxy 127.0.0.1:4000 {
+        # Critical for LLM streaming tokens: flush_interval -1 disables buffering for SSE
+        flush_interval -1
+
+        # Long timeouts for reasoning & deep research models
+        transport http {
+            response_header_timeout 600s
+            dial_timeout 10s
+        }
+
+        # Forward real client identity
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
