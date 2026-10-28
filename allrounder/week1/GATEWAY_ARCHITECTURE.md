@@ -81,16 +81,19 @@ User / Web UI / Clients
 
 ## Software Engineering Design Patterns Applied
 
-| Pattern | Architectural Layer | Implementation |
-| :--- | :--- | :--- |
-| **Ports & Adapters (Hexagonal)** | Vector Storage (`storage/`) | `VectorStore` port with `PgVectorStore` (PostgreSQL + HNSW) and `InMemoryVectorStore` (NumPy) adapters. |
-| **Factory Method** | Storage Initialization | `VectorStoreFactory.create()` probes DB connectivity and library presence, gracefully falling back with 0 crashes. |
-| **Chain of Responsibility** | Inbound Guardrails (`InputGuardrails.py`) | Sequential filter checks (Payload $\to$ Injection $\to$ PII $\to$ Toxicity). |
-| **Filter / Interceptor** | Outbound Guardrails (`OutputGuardrails.py`) | Validates LLM responses for secret leaks, PII, hallucination, and JSON formatting before client delivery. |
-| **Plugin / Adapter** | Tool & MCP Registry (`ToolRegistry.py`) | Standard `BaseTool` interface wrapping RAG search, external REST endpoints, and Model Context Protocol (MCP) servers. |
-| **Strategy Pattern** | Smart Router (`SmartRouter.py`) | Rules-based heuristics, LLM classification, and cost-cascading fallbacks. |
-| **Finite State Machine (FSM)**| Orchestration (`Orchestrator.py`) | Stateful tracking: `PENDING_ACTION` $\to$ `HUMAN_REVIEW` $\to$ `APPROVED/REJECTED` $\to$ `EXECUTION`. |
-| **Cache-Aside** | Dual-Layer Cache (`SemanticCache.py`) | Exact SHA-256 hash lookup + Semantic vector similarity checking against Redis. |
+| Pattern | Architectural Layer | Package Directory | Implementation |
+| :--- | :--- | :--- | :--- |
+| **Ports & Adapters (Hexagonal)** | Vector Storage | [`storage/`](./storage/) | `VectorStore` port with `PgVectorStore` (PostgreSQL + HNSW) and `InMemoryVectorStore` (NumPy) adapters. |
+| **Factory Method** | Storage Initialization | [`storage/`](./storage/) | `VectorStoreFactory.create()` probes DB connectivity and library presence, gracefully falling back with 0 crashes. |
+| **Chain of Responsibility** | Inbound & Outbound Guardrails | [`guardrails/`](./guardrails/) | Sequential filters (`PayloadLengthFilter` $\to$ `PromptInjectionFilter` $\to$ `PIIMaskingFilter` $\to$ `ToxicityFilter`). |
+| **Filter / Interceptor** | Outbound Guardrails | [`guardrails/`](./guardrails/) | Validates LLM responses for secret leaks, PII, hallucination, and JSON formatting before client delivery. |
+| **Adapter Pattern** | Tool & MCP Execution | [`tools/`](./tools/) | Uniform `BaseTool` interface wrapping RAG search (`RagKnowledgeTool`), external REST APIs (`RestApiToolAdapter`), and MCP servers (`MCPToolAdapter`). |
+| **Plugin / Registry** | Tool Central Registry | [`tools/`](./tools/) | `ToolRegistry` managing dynamic tool discovery, LLM function calling schema generation, and execution dispatching. |
+| **Strategy Pattern** | Smart Router | [`routing/`](./routing/) | `RoutingStrategy` with interchangeable strategies: `RuleBasedStrategy`, `LLMJudgeStrategy`, and `CostCascadingStrategy`. |
+| **Finite State Machine (FSM)**| Orchestration & HITL | [`orchestration/`](./orchestration/) | Stateful tracking: `RECEIVED` $\to$ `GUARD_INPUT` $\to$ `CACHE_CHECK` $\to$ `INTENT_ROUTED` $\to$ `PAUSED_HITL` $\to$ `COMPLETED`. |
+| **Command Pattern** | Human-in-the-Loop Gateway | [`orchestration/`](./orchestration/) | `PendingAction` command object encapsulating paused queries, proposed actions, and reviewer decision hooks. |
+| **Cache-Aside Pattern** | Dual-Tier Cache | [`caching/`](./caching/) | Exact SHA-256 hash lookup $O(1)$ 0ms latency + Semantic vector similarity checking against Redis/embeddings. |
+| **Pipeline Pattern** | RAG Ingestion & Retrieval | [`rag/`](./rag/) | Decoupled semantic chunking (`chunker.py`), RAG-Fusion & RRF ranking (`fusion.py`), and grounded synthesis (`engine.py`). |
 
 ---
 
@@ -98,47 +101,54 @@ User / Web UI / Clients
 
 ### Layer 1: Edge Reverse Proxy (Nginx / Caddy)
 - **Port:** `8080` (API) / `8000` (Web Dashboard)
-- **Configuration:** [`nginx.conf`](./nginx.conf), [`nginx.docker.conf`](./nginx.docker.conf)
+- **Configuration:** [`nginx.conf`](./nginx.conf), [`nginx.docker.conf`](./nginx.docker.conf), [`Caddyfile`](./Caddyfile)
 - Disables Server-Sent Events (SSE) buffering via `proxy_buffering off;` to allow smooth token streaming.
 - Enforces connection rate limits (`limit_req_zone`) to stop DDoS attempts at the OS TCP level before touching Python.
 
-### Layer 2: Input Guardrails & Defensive Shields
-- **File:** [`InputGuardrails.py`](./InputGuardrails.py)
+### Layer 2: Inbound Guardrails & Defensive Shields
+- **Package:** [`guardrails/`](./guardrails/) (`input_guardrails.py`, `base.py`)
+- **Pattern:** Chain of Responsibility
 - **Prompt Injection:** Heuristically halts attacks like `ignore previous instructions`, `DAN`, `developer mode`, and `<system>` override tags in `< 1ms`.
 - **Inbound PII Masking:** Replaces sensitive user emails, credit cards, SSNs, and API keys with typed tokens (e.g., `[REDACTED_EMAIL]`, `[REDACTED_API_KEY]`).
 
 ### Layer 3: Dual-Layer Caching Engine
-- **File:** [`SemanticCache.py`](./SemanticCache.py)
+- **Package:** [`caching/`](./caching/) (`semantic_cache.py`, `base.py`)
+- **Pattern:** Cache-Aside & Strategy
 - **Exact Hash Match:** $O(1)$ lookup via `sha256(model:normalized_prompt)`. Latency: `< 0.001s`, cost: `$0.00`.
 - **Semantic Vector Cache:** Generates dense embeddings (`text-embedding-3-small`) and evaluates cosine similarity. If similarity $\ge 0.85$, returns cached response with 90%+ latency reduction.
 
 ### Layer 4: Smart Router & Model Virtualization
-- **File:** [`SmartRouter.py`](./SmartRouter.py)
+- **Package:** [`routing/`](./routing/) (`router.py`, `strategies.py`, `base.py`)
+- **Pattern:** Strategy Pattern
 - Dynamically assigns queries to:
   - **`cheap` (`gpt-4o-mini`)**: For simple questions, summaries, keyword searches, and intent classification.
   - **`smart` (`gpt-4o` / `claude-3-7`)**: For complex reasoning, multi-step code generation, and critical evaluations.
 
 ### Layer 5: Orchestrator & Human-in-the-Loop (HITL) Gateway
-- **File:** [`Orchestrator.py`](./Orchestrator.py)
+- **Package:** [`orchestration/`](./orchestration/) (`orchestrator.py`, `state.py`)
+- **Pattern:** Finite State Machine (FSM) & Command Pattern
 - Decides execution path:
   1. `DIRECT_LLM`: Non-security general knowledge questions bypass document retrieval.
   2. `RAG_AUTOMATED`: Benign internal documentation queries run automated RAG-Fusion, PGVector search, and RRF ranking.
   3. `RAG_HUMAN_IN_THE_LOOP`: High-risk or offensive security requests (exploits, password cracking, privilege takeover) are **paused**. Generates a `PendingAction` and requires human operator sign-off (`approve`, `modify`, or `reject`).
 
 ### Layer 6: Pluggable Tools, External APIs & MCP (Model Context Protocol)
-- **File:** [`ToolRegistry.py`](./ToolRegistry.py)
+- **Package:** [`tools/`](./tools/) (`registry.py`, `base.py`, `rag_tool.py`, `rest_tool.py`, `mcp_tool.py`)
+- **Pattern:** Adapter Pattern & Plugin Registry
 - **`RagKnowledgeTool`**: Exposes internal document search as an LLM tool.
 - **`RestApiToolAdapter`**: Calls external REST APIs (Jira, GitHub, Slack, webhooks) without modifying orchestrator code.
 - **`MCPToolAdapter`**: Bridges standard Model Context Protocol (MCP) servers (PostgreSQL MCP, Git MCP, Filesystem MCP) into function calling schemas.
 
 ### Layer 7: Resilient Vector Storage (PostgreSQL + pgvector + In-Memory)
-- **Package:** [`storage/`](./storage/)
+- **Package:** [`storage/`](./storage/) (`base.py`, `pgvector_store.py`, `in_memory_store.py`, `factory.py`)
+- **Pattern:** Ports & Adapters (Hexagonal) & Factory Method
 - **`PgVectorStore`**: PostgreSQL 16 + pgvector with HNSW vector index (`USING hnsw (embedding vector_cosine_ops)`). Uses connection pooling.
 - **Resilient Type Adaptation:** Works with native JSON vector strings or the `pgvector` Python library.
 - **`InMemoryVectorStore`**: High-performance NumPy cosine similarity fallback if the database is offline.
 
 ### Layer 8: Output Guardrails & Groundedness Shield
-- **File:** [`OutputGuardrails.py`](./OutputGuardrails.py)
+- **Package:** [`guardrails/`](./guardrails/) (`output_guardrails.py`, `base.py`)
+- **Pattern:** Filter / Interceptor & Chain of Responsibility
 - **Secret Leakage Blocker:** Redacts leaked credentials (`sk-...`, GitHub tokens, AWS keys, database connection URIs) from LLM responses before returning them to users.
 - **Groundedness Verifier:** Calculates token overlap against retrieved context chunks to detect and flag hallucinations.
 - **JSON Schema Enforcer:** Guarantees valid structured output when required.
@@ -149,25 +159,69 @@ User / Web UI / Clients
 
 ```text
 allrounder/week1/
-├── storage/
-│   ├── __init__.py               # Storage package exports
-│   ├── base.py                   # Chunk dataclass & VectorStore abstract interface
-│   ├── pgvector_store.py         # PostgreSQL + pgvector adapter with connection pool & HNSW
-│   ├── in_memory_store.py        # Resilient NumPy vector store fallback
-│   └── factory.py                # VectorStoreFactory with capability detection
-├── InputGuardrails.py            # Layer 2: Inbound prompt injection & PII shield
-├── SemanticCache.py              # Layer 3: Dual-layer exact & semantic vector cache
-├── SmartRouter.py                # Layer 4: Model routing & cost-cascading
-├── Orchestrator.py               # Layer 5: FSM orchestrator with Human-in-the-Loop gateway
-├── ToolRegistry.py               # Layer 6: Extensible MCP & REST API tool registry
-├── RagEngine.py                  # Knowledge retrieval: Fusion, RRF ranking, & pgvector
-├── OutputGuardrails.py           # Layer 8: Outbound secret leakage & groundedness checks
-├── app.py                        # FastAPI backend & interactive web dashboard
-├── litellm_config.yaml           # LiteLLM proxy configuration
-├── docker-compose.gateway.yml    # Docker stack (Nginx, LiteLLM, Redis, PostgreSQL)
-├── test_enterprise_architecture.py # Unit tests for all architectural layers
-├── test_caching.py               # Cache benchmarks & verification
-└── test_reverse_proxy.py         # Reverse proxy & rate-limit verification
+├── app.py                          # FastAPI backend & interactive web dashboard
+├── docker-compose.gateway.yml      # Docker stack (Nginx, LiteLLM, Redis, PostgreSQL)
+├── GATEWAY_ARCHITECTURE.md         # Complete system architecture specification
+├── litellm_config.yaml             # LiteLLM proxy configuration
+├── nginx.conf                      # Nginx edge reverse proxy config (local)
+├── nginx.docker.conf               # Nginx edge reverse proxy config (Docker)
+├── Caddyfile                       # Optional Caddy reverse proxy config
+├── __init__.py                     # Package entry point exposing all modular layers
+│
+├── guardrails/                     # Chain of Responsibility & Filter / Interceptor Pattern
+│   ├── __init__.py
+│   ├── base.py                     # BaseGuardrailFilter, GuardrailPipeline, GuardrailContext
+│   ├── input_guardrails.py         # Injection, PII Masking, Length, Toxicity filters
+│   └── output_guardrails.py        # Secret Leakage, Groundedness, Schema filters
+│
+├── caching/                        # Cache-Aside Pattern & Dual-Tier Strategy
+│   ├── __init__.py
+│   ├── base.py                     # BaseCache abstract interface & CacheEntry dataclass
+│   └── semantic_cache.py           # Exact O(1) hash + Semantic Vector Cosine similarity cache
+│
+├── routing/                        # Strategy Pattern for Model Routing
+│   ├── __init__.py
+│   ├── base.py                     # RoutingStrategy interface & RoutingDecision model
+│   ├── strategies.py               # RuleBasedStrategy, LLMJudgeStrategy, CostCascadingStrategy
+│   └── router.py                   # SmartRouter context class
+│
+├── orchestration/                  # Finite State Machine (FSM) & Command Pattern (HITL)
+│   ├── __init__.py
+│   ├── state.py                    # ExecutionState, ExecutionStrategy, RiskLevel, PendingAction
+│   └── orchestrator.py             # Stateful Orchestrator coordinating execution & HITL
+│
+├── tools/                          # Adapter Pattern & Plugin Registry Pattern
+│   ├── __init__.py
+│   ├── base.py                     # BaseTool abstract interface & ToolDefinition schema
+│   ├── rag_tool.py                 # RagKnowledgeTool adapter
+│   ├── rest_tool.py                # RestApiToolAdapter (Jira, GitHub, Slack)
+│   ├── mcp_tool.py                 # MCPToolAdapter (Model Context Protocol)
+│   └── registry.py                 # ToolRegistry discovery and dispatch manager
+│
+├── storage/                        # Ports & Adapters (Hexagonal) & Factory Method
+│   ├── __init__.py
+│   ├── base.py                     # VectorStore port & Chunk entity
+│   ├── pgvector_store.py           # PostgreSQL 16 + pgvector adapter (pool + HNSW)
+│   ├── in_memory_store.py          # Resilient NumPy in-memory fallback adapter
+│   └── factory.py                  # VectorStoreFactory with capability detection
+│
+├── rag/                            # Pipeline Pattern for Knowledge Retrieval
+│   ├── __init__.py
+│   ├── chunker.py                  # Boundary-aware semantic chunking
+│   ├── fusion.py                   # RAG-Fusion query expansion & Reciprocal Rank Fusion (RRF)
+│   └── engine.py                   # RagEngine pipeline coordinator
+│
+├── tests/                          # Unified Automated Verification Suites
+│   ├── __init__.py
+│   ├── test_enterprise_architecture.py # Unit tests for all design patterns & layers
+│   ├── test_caching.py             # Exact & semantic cache benchmarks
+│   └── test_reverse_proxy.py       # Reverse proxy, health, and rate-limiting tests
+│
+└── docs/                           # Indexed Knowledge Base
+    ├── 1792861009005.pdf           # Windows Privilege Escalation: SeTakeOwnershipPrivilege
+    ├── 1792907264681.pdf           # AWS: Penetration Testing Lab Setup
+    ├── 1792907573179.pdf           # PostgreSQL Penetration Testing
+    └── 1793025397798.pdf           # Comprehensive Guide on Wordlists
 ```
 
 ---
@@ -176,18 +230,18 @@ allrounder/week1/
 
 ### 1. Run Complete Architecture Test Suite
 ```bash
-python3 allrounder/week1/test_enterprise_architecture.py
+python3 allrounder/week1/tests/test_enterprise_architecture.py
 ```
-*Verifies Storage Abstraction, Input Guardrails, Output Guardrails, Tool & MCP Registry, and Orchestrator.*
+*Verifies Storage Abstraction, Guardrails Chain of Responsibility, Cache-Aside, Strategy Routing, Tool/MCP Registry, and Orchestrator FSM.*
 
-### 2. Run RAG with PostgreSQL + pgvector
+### 2. Run RAG Pipeline with PostgreSQL + pgvector
 ```bash
 python3 allrounder/week1/RagEngine.py
 ```
 
 ### 3. Run Cache Benchmarks
 ```bash
-python3 allrounder/week1/test_caching.py
+python3 allrounder/week1/tests/test_caching.py
 ```
 
 ### 4. Launch Interactive Web Dashboard
@@ -205,3 +259,4 @@ curl -s http://localhost:8000/api/tools | jq .
 ```bash
 docker exec -it ai_gateway_pgvector psql -U postgres -d rag_db -c "SELECT id, title, page_start, substring(content from 1 for 80) FROM rag_chunks LIMIT 3;"
 ```
+

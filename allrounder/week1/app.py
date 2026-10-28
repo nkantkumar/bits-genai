@@ -41,13 +41,16 @@ if str(WEEK1_DIR) not in sys.path:
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
 
-from InputGuardrails import InputGuardrails, PIIAction, GuardrailResult
-from OutputGuardrails import output_guardrails
-from ToolRegistry import tool_registry
-from SemanticCache import SemanticCache
-from SmartRouter import classify_by_rules, classify_by_llm, ask_with_cascade, CHEAP, SMART
-from RagEngine import rag_engine
-from Orchestrator import orchestrator, ExecutionStrategy, RiskLevel
+from guardrails import InputGuardrails, OutputGuardrails, PIIAction, GuardrailResult, output_guardrails
+from tools import tool_registry
+from caching import SemanticCache
+from routing import SmartRouter, smart_router, CHEAP, SMART
+from rag import rag_engine
+from orchestration import orchestrator, ExecutionStrategy, RiskLevel
+
+classify_by_rules = smart_router.classify_by_rules
+classify_by_llm = smart_router.classify_by_llm
+ask_with_cascade = smart_router.ask_with_cascade
 from openai import OpenAI
 
 logger = logging.getLogger("App")
