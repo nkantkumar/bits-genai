@@ -387,10 +387,15 @@ class GrafanaMCPAdapter(BaseTool):
             ]
             if query:
                 q_lower = query.lower()
+                q_words = [w for w in q_lower.split() if len(w) > 2]
                 filtered = [
                     d for d in all_dashboards
-                    if q_lower in d["title"].lower() or any(q_lower in t.lower() for t in d["tags"])
+                    if q_lower in d["title"].lower()
+                    or any(w in d["title"].lower() or any(w in t.lower() for t in d["tags"]) for w in q_words)
                 ]
+                # Graceful fallback to all dashboards if no specific filter matched
+                if not filtered:
+                    filtered = all_dashboards
             else:
                 filtered = all_dashboards
 

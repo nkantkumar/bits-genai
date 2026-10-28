@@ -130,12 +130,7 @@ def cache_stats() -> Dict[str, Any]:
 
 @app.post("/api/cache/clear")
 def clear_cache() -> Dict[str, str]:
-    app_cache.exact_cache.clear()
-    app_cache.entries.clear()
-    app_cache.total_queries = 0
-    app_cache.exact_hits = 0
-    app_cache.semantic_hits = 0
-    app_cache.misses = 0
+    app_cache.clear()
     return {"status": "cache_cleared"}
 
 
@@ -852,14 +847,19 @@ def index_page() -> str:
         <span>→</span>
       </button>
 
-      <!-- Direct GitHub API Tool Runner -->
+      <!-- Direct Tool & MCP Runner -->
       <div style="background: rgba(244, 114, 182, 0.05); border: 1px solid rgba(244, 114, 182, 0.2); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.75rem; font-weight: 700; color: #f472b6; text-transform: uppercase;">🛠️ Direct Tool Execution (GitHub REST API)</span>
-          <span id="ghStatusBadge" style="font-size: 0.7rem; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Adapter: github_api</span>
+          <span style="font-size: 0.75rem; font-weight: 700; color: #f472b6; text-transform: uppercase;">🛠️ Direct Tool & MCP Execution</span>
+          <span id="directToolStatusBadge" style="font-size: 0.7rem; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Tool: github_api</span>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
-          <select id="ghAction" onchange="onGhActionChange()" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
+          <select id="directToolSelect" onchange="onToolSelectChange()" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
+            <option value="github_api">Tool: GitHub REST API</option>
+            <option value="mcp__prometheus__query">Tool: Prometheus MCP (PromQL)</option>
+            <option value="mcp__grafana__query">Tool: Grafana MCP (Dashboards)</option>
+          </select>
+          <select id="directActionSelect" onchange="onActionSelectChange()" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
             <option value="get_repo">Action: get_repo</option>
             <option value="search_repositories">Action: search_repositories</option>
             <option value="get_file_content">Action: get_file_content</option>
@@ -867,11 +867,11 @@ def index_page() -> str:
             <option value="get_user">Action: get_user</option>
             <option value="list_commits">Action: list_commits</option>
           </select>
-          <input type="text" id="ghParam1" value="octocat/Hello-World" placeholder="owner/repo (e.g. octocat/Hello-World)" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
         </div>
         <div style="display: flex; gap: 0.5rem;">
-          <input type="text" id="ghParam2" placeholder="Path (e.g. README) or Query / Username" style="font-size: 0.78rem; padding: 0.35rem 0.6rem; flex: 1;">
-          <button class="chip" onclick="executeGhDirect()" style="background: rgba(244, 114, 182, 0.2); border-color: rgba(244, 114, 182, 0.4); color: #f472b6; font-weight: 600; cursor: pointer;">Run Tool Directly</button>
+          <input type="text" id="directParam1" value="octocat/Hello-World" placeholder="owner/repo (e.g. octocat/Hello-World)" style="font-size: 0.78rem; padding: 0.35rem 0.6rem; flex: 1;">
+          <input type="text" id="directParam2" placeholder="Optional param (path, query, sort)" style="font-size: 0.78rem; padding: 0.35rem 0.6rem; flex: 1;">
+          <button class="chip" onclick="executeDirectTool()" style="background: rgba(244, 114, 182, 0.2); border-color: rgba(244, 114, 182, 0.4); color: #f472b6; font-weight: 600; cursor: pointer;">Run Tool Directly</button>
         </div>
       </div>
     </div>
@@ -1149,7 +1149,7 @@ def index_page() -> str:
         const isDirect = data.strategy === 'DIRECT_LLM' || (data.stage && data.stage.includes('direct_llm'));
         const isTool = data.strategy === 'TOOL_CALL' || (data.stage && data.stage.includes('tool_call'));
         const stratHtml = isTool
-          ? '<span class="tag-tool" style="background: rgba(244, 114, 182, 0.12); border: 1px solid rgba(244, 114, 182, 0.3); padding: 0.2rem 0.5rem; border-radius: 4px;">🛠️ Orchestrator Strategy: TOOL_CALL (External GitHub REST API Invocation)</span>'
+          ? '<span class="tag-tool" style="background: rgba(244, 114, 182, 0.12); border: 1px solid rgba(244, 114, 182, 0.3); padding: 0.2rem 0.5rem; border-radius: 4px;">🛠️ Orchestrator Strategy: TOOL_CALL (External REST & MCP Invocation)</span>'
           : (isDirect
             ? '<span class="tag-direct">⚡ Orchestrator Strategy: DIRECT_LLM (General Knowledge — No RAG Search Needed)</span>'
             : '<span class="tag-rag">📚 Orchestrator Strategy: RAG_AUTOMATED (PostgreSQL pgvector Grounded Search)</span>');
@@ -1215,48 +1215,119 @@ def index_page() -> str:
       citationsSection.style.display = 'flex';
     }
 
-    function onGhActionChange() {
-      const act = document.getElementById('ghAction').value;
-      const p1 = document.getElementById('ghParam1');
-      const p2 = document.getElementById('ghParam2');
+    function onToolSelectChange() {
+      const tool = document.getElementById('directToolSelect').value;
+      const actSelect = document.getElementById('directActionSelect');
+      const badge = document.getElementById('directToolStatusBadge');
+      const p1 = document.getElementById('directParam1');
+      const p2 = document.getElementById('directParam2');
 
-      if (act === 'get_repo' || act === 'list_issues' || act === 'list_commits') {
+      badge.innerText = `Tool: ${tool}`;
+
+      if (tool === 'github_api') {
+        actSelect.innerHTML = `
+          <option value="get_repo">Action: get_repo</option>
+          <option value="search_repositories">Action: search_repositories</option>
+          <option value="get_file_content">Action: get_file_content</option>
+          <option value="list_issues">Action: list_issues</option>
+          <option value="get_user">Action: get_user</option>
+          <option value="list_commits">Action: list_commits</option>
+        `;
+        p1.value = 'octocat/Hello-World';
         p1.placeholder = 'owner/repo (e.g. octocat/Hello-World)';
-        p2.placeholder = act === 'list_issues' ? 'State (open/closed/all)' : 'Optional ref / branch';
-      } else if (act === 'get_file_content') {
-        p1.placeholder = 'owner/repo (e.g. octocat/Hello-World)';
-        p2.placeholder = 'File path (e.g. README or src/app.py)';
-      } else if (act === 'search_repositories') {
-        p1.placeholder = 'Search Query (e.g. ai gateway python)';
-        p2.placeholder = 'Sort (stars, forks, updated)';
-      } else if (act === 'get_user') {
-        p1.placeholder = 'GitHub username (e.g. octocat)';
-        p2.placeholder = 'Unused';
+        p2.value = '';
+        p2.placeholder = 'Optional param (path, query, sort)';
+      } else if (tool === 'mcp__prometheus__query') {
+        actSelect.innerHTML = `
+          <option value="query_instant">Action: query_instant (PromQL)</option>
+          <option value="get_alerts">Action: get_alerts</option>
+          <option value="list_metrics">Action: list_metrics</option>
+          <option value="query_range">Action: query_range</option>
+        `;
+        p1.value = 'ai_gateway_p99_latency_ms';
+        p1.placeholder = 'PromQL query (e.g. ai_gateway_p99_latency_ms, up)';
+        p2.value = '';
+        p2.placeholder = 'Optional filter / step';
+      } else if (tool === 'mcp__grafana__query') {
+        actSelect.innerHTML = `
+          <option value="search_dashboards">Action: search_dashboards</option>
+          <option value="list_datasources">Action: list_datasources</option>
+          <option value="get_dashboard">Action: get_dashboard</option>
+          <option value="get_alert_rules">Action: get_alert_rules</option>
+        `;
+        p1.value = 'gateway';
+        p1.placeholder = 'Dashboard keyword (e.g. gateway, litellm)';
+        p2.value = '';
+        p2.placeholder = 'Optional UID';
       }
     }
 
-    async function executeGhDirect() {
-      const act = document.getElementById('ghAction').value;
-      const p1 = document.getElementById('ghParam1').value.trim();
-      const p2 = document.getElementById('ghParam2').value.trim();
-      const outputBox = document.getElementById('outputBox');
-      const badge = document.getElementById('ghStatusBadge');
+    function onActionSelectChange() {
+      const tool = document.getElementById('directToolSelect').value;
+      const act = document.getElementById('directActionSelect').value;
+      const p1 = document.getElementById('directParam1');
+      const p2 = document.getElementById('directParam2');
 
-      outputBox.innerHTML = '<span style="color: #f472b6;">Executing GitHub REST API tool directly via /api/tools/execute...</span>';
-      badge.innerText = 'Calling GitHub...';
+      if (tool === 'mcp__prometheus__query') {
+        if (act === 'query_instant') {
+          p1.placeholder = 'PromQL query (e.g. ai_gateway_p99_latency_ms, up)';
+          p2.placeholder = 'Optional eval time';
+        } else if (act === 'list_metrics') {
+          p1.placeholder = 'Optional metric prefix / keyword filter';
+          p2.placeholder = 'Unused';
+        } else if (act === 'get_alerts') {
+          p1.placeholder = 'Unused';
+          p2.placeholder = 'Unused';
+        }
+      } else if (tool === 'mcp__grafana__query') {
+        if (act === 'search_dashboards') {
+          p1.placeholder = 'Search keyword (e.g. gateway, litellm, cache)';
+          p2.placeholder = 'Unused';
+        } else if (act === 'get_dashboard') {
+          p1.placeholder = 'Dashboard UID (e.g. ai-gateway-telemetry)';
+          p2.placeholder = 'Unused';
+        }
+      }
+    }
+
+    async function executeDirectTool() {
+      const tool = document.getElementById('directToolSelect').value;
+      const act = document.getElementById('directActionSelect').value;
+      const p1 = document.getElementById('directParam1').value.trim();
+      const p2 = document.getElementById('directParam2').value.trim();
+      const outputBox = document.getElementById('outputBox');
+      const badge = document.getElementById('directToolStatusBadge');
+
+      outputBox.innerHTML = `<span style="color: #f472b6;">Executing ${tool} (${act}) directly via /api/tools/execute...</span>`;
+      badge.innerText = `Calling ${tool}...`;
 
       let params = { action: act };
-      if (act === 'get_repo' || act === 'list_issues' || act === 'list_commits') {
-        params.repo = p1;
-        if (p2) params[act === 'list_issues' ? 'state' : 'ref'] = p2;
-      } else if (act === 'get_file_content') {
-        params.repo = p1;
-        params.path = p2 || 'README';
-      } else if (act === 'search_repositories') {
-        params.query = p1 || 'ai gateway';
-        if (p2) params.sort = p2;
-      } else if (act === 'get_user') {
-        params.username = p1 || 'octocat';
+      if (tool === 'github_api') {
+        if (act === 'get_repo' || act === 'list_issues' || act === 'list_commits') {
+          params.repo = p1;
+          if (p2) params[act === 'list_issues' ? 'state' : 'ref'] = p2;
+        } else if (act === 'get_file_content') {
+          params.repo = p1;
+          params.path = p2 || 'README';
+        } else if (act === 'search_repositories') {
+          params.query = p1 || 'ai gateway';
+          if (p2) params.sort = p2;
+        } else if (act === 'get_user') {
+          params.username = p1 || 'octocat';
+        }
+      } else if (tool === 'mcp__prometheus__query') {
+        if (act === 'query_instant' || act === 'query_range') {
+          params.query = p1 || 'ai_gateway_p99_latency_ms';
+          if (p2) params.step = p2;
+        } else if (act === 'list_metrics') {
+          if (p1) params.metric_name = p1;
+        }
+      } else if (tool === 'mcp__grafana__query') {
+        if (act === 'search_dashboards') {
+          params.query = p1 || '';
+        } else if (act === 'get_dashboard') {
+          params.dashboard_uid = p1 || 'ai-gateway-telemetry';
+        }
       }
 
       try {
@@ -1264,13 +1335,13 @@ def index_page() -> str:
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            tool_name: 'github_api',
+            tool_name: tool,
             params: params,
           })
         });
         const data = await res.json();
         badge.innerText = data.success ? 'HTTP 200 OK' : 'Execution Failed';
-        outputBox.innerText = `// Tool Execution Output via ToolRegistry: github_api\n// Elapsed: ${data.elapsed_ms}ms\n\n` + JSON.stringify(data.result, null, 2);
+        outputBox.innerText = `// Tool Execution Output via ToolRegistry: ${tool}\n// Action: ${act}\n// Elapsed: ${data.elapsed_ms}ms\n\n` + JSON.stringify(data.result, null, 2);
       } catch (e) {
         outputBox.innerHTML = `<span style="color: #f87171;">Tool execution failed: ${e.message}</span>`;
         badge.innerText = 'Error';

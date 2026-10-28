@@ -128,7 +128,16 @@ class Orchestrator:
                 "model_used": r.model or chosen_model,
             }
 
-        messages = [{"role": "user", "content": prompt}]
+        system_msg = {
+            "role": "system",
+            "content": (
+                "You are an AI Security Gateway Assistant with access to registered tools "
+                "(GitHub REST API, Prometheus MCP, Grafana MCP). When the user asks about repositories, "
+                "metrics, latency, alerts, or dashboards, invoke the appropriate tool(s) and provide "
+                "a clear, structured factual summary incorporating the returned tool data."
+            ),
+        }
+        messages = [system_msg, {"role": "user", "content": prompt}]
         try:
             initial_resp = self.client.chat.completions.create(
                 model=chosen_model,
@@ -232,8 +241,8 @@ class Orchestrator:
         # Fast heuristic pass for tools (e.g. GitHub REST API, Prometheus / Grafana MCP)
         tool_keywords = [
             "github", "git repo", "repository issues", "github repo", "list commits", "search github",
-            "prometheus", "grafana", "promql", "p99 latency", "gateway latency", "token spend",
-            "dashboard", "active alerts", "telemetry", "datasource"
+            "prometheus", "promo", "grafana", "promql", "metrics", "p99 latency", "gateway latency",
+            "token spend", "dashboard", "dashboards", "active alerts", "telemetry", "datasource"
         ]
         is_tool_candidate = any(w in p_lower for w in tool_keywords)
         if is_tool_candidate and not is_rag_candidate:
