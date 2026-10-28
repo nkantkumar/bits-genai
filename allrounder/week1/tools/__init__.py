@@ -7,6 +7,7 @@ from .rag_tool import RagKnowledgeTool
 from .rest_tool import RestApiToolAdapter
 from .mcp_tool import MCPToolAdapter
 from .github_tool import GitHubToolAdapter, GitHubApiTool
+from .prometheus_grafana_mcp import PrometheusMCPAdapter, GrafanaMCPAdapter
 from .registry import ToolRegistry, tool_registry
 
 __all__ = [
@@ -18,7 +19,10 @@ __all__ = [
     "MCPToolAdapter",
     "GitHubToolAdapter",
     "GitHubApiTool",
+    "PrometheusMCPAdapter",
+    "GrafanaMCPAdapter",
     "ToolRegistry",
     "tool_registry",
 ]
+
 

@@ -27,7 +27,9 @@ from tools import (
     BaseTool,
     GitHubApiTool,
     GitHubToolAdapter,
+    GrafanaMCPAdapter,
     MCPToolAdapter,
+    PrometheusMCPAdapter,
     RestApiToolAdapter,
     ToolRegistry,
 )
@@ -201,6 +203,46 @@ class TestToolAndMCPRegistry(unittest.TestCase):
         self.assertEqual(err_res.get("status"), "error")
         self.assertIn("Missing required parameter 'action'", err_res.get("error"))
 
+    def test_prometheus_mcp_adapter(self):
+        prom_tool = PrometheusMCPAdapter()
+        self.registry.register(prom_tool)
+        self.assertIsNotNone(self.registry.get_tool("mcp__prometheus__query"))
+
+        # Verify instant query
+        res = prom_tool.execute({"action": "query_instant", "query": "ai_gateway_p99_latency_ms"})
+        self.assertEqual(res.get("status"), "success")
+        self.assertIn("data", res)
+
+        # Verify metric list
+        list_res = prom_tool.execute({"action": "list_metrics"})
+        self.assertEqual(list_res.get("status"), "success")
+        self.assertGreater(list_res.get("count", 0), 0)
+
+        # Verify active alerts
+        alert_res = prom_tool.execute({"action": "get_alerts"})
+        self.assertEqual(alert_res.get("status"), "success")
+        self.assertIn("alerts", alert_res)
+
+    def test_grafana_mcp_adapter(self):
+        grafana_tool = GrafanaMCPAdapter()
+        self.registry.register(grafana_tool)
+        self.assertIsNotNone(self.registry.get_tool("mcp__grafana__query"))
+
+        # Verify search dashboards
+        dash_res = grafana_tool.execute({"action": "search_dashboards", "query": "gateway"})
+        self.assertEqual(dash_res.get("status"), "success")
+        self.assertIn("dashboards", dash_res)
+
+        # Verify list datasources
+        ds_res = grafana_tool.execute({"action": "list_datasources"})
+        self.assertEqual(ds_res.get("status"), "success")
+        self.assertIn("datasources", ds_res)
+
+        # Verify alert rules
+        rules_res = grafana_tool.execute({"action": "get_alert_rules"})
+        self.assertEqual(rules_res.get("status"), "success")
+        self.assertIn("alert_rules", rules_res)
+
 
 class TestOrchestrator(unittest.TestCase):
     """Verifies Finite State Machine (FSM) & Human-in-the-Loop (HITL) Gateway."""
@@ -221,6 +263,13 @@ class TestOrchestrator(unittest.TestCase):
             "Fetch details for GitHub repository octocat/Hello-World"
         )
         self.assertEqual(strat, ExecutionStrategy.TOOL_CALL)
+
+    def test_tool_call_prometheus_routing(self):
+        strat, risk, reason, _, _ = self.orchestrator.decide_strategy(
+            "Query Prometheus metrics for gateway P99 latency and active alerts"
+        )
+        self.assertEqual(strat, ExecutionStrategy.TOOL_CALL)
+
 
     def test_hitl_security_gate(self):
         hitl_query = (

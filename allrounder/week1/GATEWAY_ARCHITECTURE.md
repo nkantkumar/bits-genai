@@ -51,9 +51,10 @@ User / Web UI / Clients
 │ Layer 6: Tools & MCP Adapters  │   │ Human Security Reviewer Approval  │
 │ (Adapter / Plugin Pattern)     │   │ - Approve: executes query         │
 │ - RagKnowledgeTool (PgVector)  │   │ - Modify: human rewrites search   │
-│ - RestApiToolAdapter (Jira/APIs│   │ - Reject: defensive educational   │
-│ - MCPToolAdapter (Model Context│   └─────────────────┬─────────────────┘
-│   Protocol: Filesystem, Git)   │                     │
+│ - RestApiToolAdapter / GitHub  │   │ - Reject: defensive educational   │
+│ - PrometheusMCPAdapter (PromQL)│   └─────────────────┬─────────────────┘
+│ - GrafanaMCPAdapter (Dashboard)│                     │
+│ - MCPToolAdapter (Base Model)  │                     │
 └───────────────┬────────────────┘                     │
                 │                                      │
                 ▼                                      ▼
@@ -87,7 +88,7 @@ User / Web UI / Clients
 | **Factory Method** | Storage Initialization | [`storage/`](./storage/) | `VectorStoreFactory.create()` probes DB connectivity and library presence, gracefully falling back with 0 crashes. |
 | **Chain of Responsibility** | Inbound & Outbound Guardrails | [`guardrails/`](./guardrails/) | Sequential filters (`PayloadLengthFilter` $\to$ `PromptInjectionFilter` $\to$ `PIIMaskingFilter` $\to$ `ToxicityFilter`). |
 | **Filter / Interceptor** | Outbound Guardrails | [`guardrails/`](./guardrails/) | Validates LLM responses for secret leaks, PII, hallucination, and JSON formatting before client delivery. |
-| **Adapter Pattern** | Tool & MCP Execution | [`tools/`](./tools/) | Uniform `BaseTool` interface wrapping RAG search (`RagKnowledgeTool`), external REST APIs (`RestApiToolAdapter`), and MCP servers (`MCPToolAdapter`). |
+| **Adapter Pattern** | Tool & MCP Execution | [`tools/`](./tools/) | Uniform `BaseTool` interface wrapping RAG search (`RagKnowledgeTool`), external REST APIs (`RestApiToolAdapter`, `GitHubToolAdapter`), and MCP servers (`PrometheusMCPAdapter`, `GrafanaMCPAdapter`, `MCPToolAdapter`). |
 | **Plugin / Registry** | Tool Central Registry | [`tools/`](./tools/) | `ToolRegistry` managing dynamic tool discovery, LLM function calling schema generation, and execution dispatching. |
 | **Strategy Pattern** | Smart Router | [`routing/`](./routing/) | `RoutingStrategy` with interchangeable strategies: `RuleBasedStrategy`, `LLMJudgeStrategy`, and `CostCascadingStrategy`. |
 | **Finite State Machine (FSM)**| Orchestration & HITL | [`orchestration/`](./orchestration/) | Stateful tracking: `RECEIVED` $\to$ `GUARD_INPUT` $\to$ `CACHE_CHECK` $\to$ `INTENT_ROUTED` $\to$ `PAUSED_HITL` $\to$ `COMPLETED`. |
@@ -133,11 +134,14 @@ User / Web UI / Clients
   3. `RAG_HUMAN_IN_THE_LOOP`: High-risk or offensive security requests (exploits, password cracking, privilege takeover) are **paused**. Generates a `PendingAction` and requires human operator sign-off (`approve`, `modify`, or `reject`).
 
 ### Layer 6: Pluggable Tools, External APIs & MCP (Model Context Protocol)
-- **Package:** [`tools/`](./tools/) (`registry.py`, `base.py`, `rag_tool.py`, `rest_tool.py`, `mcp_tool.py`)
+- **Package:** [`tools/`](./tools/) (`registry.py`, `base.py`, `rag_tool.py`, `rest_tool.py`, `github_tool.py`, `prometheus_grafana_mcp.py`, `mcp_tool.py`)
 - **Pattern:** Adapter Pattern & Plugin Registry
 - **`RagKnowledgeTool`**: Exposes internal document search as an LLM tool.
-- **`RestApiToolAdapter`**: Calls external REST APIs (Jira, GitHub, Slack, webhooks) without modifying orchestrator code.
-- **`MCPToolAdapter`**: Bridges standard Model Context Protocol (MCP) servers (PostgreSQL MCP, Git MCP, Filesystem MCP) into function calling schemas.
+- **`GitHubToolAdapter`**: Direct REST API v3 adapter for repository inspection, base64 file decoding, commit history, and issue tracking.
+- **`PrometheusMCPAdapter`**: Model Context Protocol (MCP) tool (`mcp__prometheus__query`) enabling agents to evaluate PromQL queries (`ai_gateway_p99_latency_ms`, `ai_gateway_requests_total`, `litellm_token_spend_usd`, `ai_gateway_cache_hit_ratio`), list metric descriptors, and inspect active alerts.
+- **`GrafanaMCPAdapter`**: Model Context Protocol (MCP) tool (`mcp__grafana__query`) providing dashboard discovery, panel inspection, datasource catalog queries (Prometheus, PostgreSQL, Redis), and alerting rule audits.
+- **`MCPToolAdapter`**: General-purpose adapter bridging arbitrary Model Context Protocol (MCP) server endpoints into OpenAI-compatible function calling schemas.
+- **Resilient Offline Fallback**: When Prometheus or Grafana endpoints are offline in local dev, adapters return high-fidelity synthetic telemetry simulations so agent workflows never break.
 
 ### Layer 7: Resilient Vector Storage (PostgreSQL + pgvector + In-Memory)
 - **Package:** [`storage/`](./storage/) (`base.py`, `pgvector_store.py`, `in_memory_store.py`, `factory.py`)
@@ -194,8 +198,10 @@ allrounder/week1/
 │   ├── __init__.py
 │   ├── base.py                     # BaseTool abstract interface & ToolDefinition schema
 │   ├── rag_tool.py                 # RagKnowledgeTool adapter
-│   ├── rest_tool.py                # RestApiToolAdapter (Jira, GitHub, Slack)
-│   ├── mcp_tool.py                 # MCPToolAdapter (Model Context Protocol)
+│   ├── rest_tool.py                # RestApiToolAdapter (Jira, Slack, webhooks)
+│   ├── github_tool.py              # GitHubToolAdapter (REST API v3 repos, files, issues)
+│   ├── prometheus_grafana_mcp.py   # PrometheusMCPAdapter & GrafanaMCPAdapter (PromQL, Dashboards)
+│   ├── mcp_tool.py                 # MCPToolAdapter (General Model Context Protocol)
 │   └── registry.py                 # ToolRegistry discovery and dispatch manager
 │
 ├── storage/                        # Ports & Adapters (Hexagonal) & Factory Method
@@ -375,8 +381,22 @@ Open **`http://localhost:8000`** in your browser.
 curl -s http://localhost:8000/api/tools | jq .
 ```
 
-### 6. Verify PostgreSQL Database Chunks
+### 6. Query Prometheus & Grafana MCP Telemetry Directly
+```bash
+# Query Prometheus MCP for Gateway P99 Latency
+curl -s -X POST http://localhost:8000/api/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{"tool_name": "mcp__prometheus__query", "params": {"action": "query_instant", "query": "ai_gateway_p99_latency_ms"}}' | jq .
+
+# Search Grafana MCP for AI Gateway Dashboards
+curl -s -X POST http://localhost:8000/api/tools/execute \
+  -H "Content-Type: application/json" \
+  -d '{"tool_name": "mcp__grafana__query", "params": {"action": "search_dashboards", "query": "gateway"}}' | jq .
+```
+
+### 7. Verify PostgreSQL Database Chunks
 ```bash
 docker exec -it ai_gateway_pgvector psql -U postgres -d rag_db -c "SELECT id, title, page_start, substring(content from 1 for 80) FROM rag_chunks LIMIT 3;"
 ```
+
 

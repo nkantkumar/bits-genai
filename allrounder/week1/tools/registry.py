@@ -52,14 +52,23 @@ class ToolRegistry:
 
 
 def create_default_registry() -> ToolRegistry:
-    """Creates registry with default out-of-the-box adapters (GitHub REST API, etc.)."""
+    """Creates registry with default out-of-the-box adapters (GitHub REST API, Prometheus, Grafana MCP)."""
     reg = ToolRegistry()
     try:
         from .github_tool import GitHubToolAdapter
         reg.register(GitHubToolAdapter())
     except Exception as e:
         logger.warning(f"Failed to auto-register default GitHub tool: {e}")
+
+    try:
+        from .prometheus_grafana_mcp import PrometheusMCPAdapter, GrafanaMCPAdapter
+        reg.register(PrometheusMCPAdapter())
+        reg.register(GrafanaMCPAdapter())
+    except Exception as e:
+        logger.warning(f"Failed to auto-register Prometheus/Grafana MCP tools: {e}")
+
     return reg
+
 
 
 # Global default registry instance

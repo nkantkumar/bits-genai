@@ -772,7 +772,8 @@ def index_page() -> str:
       </div>
     </div>
     <div class="header-badges">
-      <div class="db-badge" style="background: rgba(244, 114, 182, 0.12); border-color: rgba(244, 114, 182, 0.3); color: #f472b6;">🛠️ GitHub API Tool (Adapter)</div>
+      <div class="db-badge" style="background: rgba(244, 114, 182, 0.12); border-color: rgba(244, 114, 182, 0.3); color: #f472b6;">🛠️ GitHub API Tool</div>
+      <div class="db-badge" style="background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.3); color: #38bdf8;">📊 Prometheus & Grafana MCP</div>
       <div class="db-badge">PostgreSQL 16 + pgvector (5433)</div>
       <div class="status-badge">
         <span class="dot"></span>
@@ -841,6 +842,8 @@ def index_page() -> str:
           <div class="chip chip-tool" onclick="setPrompt('Fetch GitHub repository details for octocat/Hello-World')">🛠️ GitHub: Repo Details</div>
           <div class="chip chip-tool" onclick="setPrompt('Search GitHub for litellm AI Gateway repositories and summarize results')">🛠️ GitHub: Search Repos</div>
           <div class="chip chip-tool" onclick="setPrompt('Read README file from octocat/Hello-World via GitHub tool')">🛠️ GitHub: File Content</div>
+          <div class="chip chip-tool" onclick="setPrompt('Query Prometheus metrics for AI Gateway P99 latency and active alerts')">📊 Prometheus: P99 Latency & Alerts</div>
+          <div class="chip chip-tool" onclick="setPrompt('Search Grafana dashboards for AI Gateway production telemetry and datasources')">📈 Grafana: Search Dashboards</div>
         </div>
       </div>
 

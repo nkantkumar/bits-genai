@@ -23,6 +23,8 @@ from .tools import (
     MCPToolAdapter,
     GitHubToolAdapter,
     GitHubApiTool,
+    PrometheusMCPAdapter,
+    GrafanaMCPAdapter,
 )
 from .orchestration import Orchestrator, orchestrator, ExecutionStrategy, RiskLevel
 from .storage import VectorStore, VectorStoreFactory, PgVectorStore, InMemoryVectorStore, Chunk
@@ -44,6 +46,8 @@ __all__ = [
     "MCPToolAdapter",
     "GitHubToolAdapter",
     "GitHubApiTool",
+    "PrometheusMCPAdapter",
+    "GrafanaMCPAdapter",
     "Orchestrator",
     "orchestrator",
     "ExecutionStrategy",

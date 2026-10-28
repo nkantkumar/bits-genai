@@ -229,15 +229,18 @@ class Orchestrator:
         matched_risk_terms = [t for t in self.hitl_risk_triggers if t in p_lower]
         is_high_risk = len(matched_risk_terms) > 0
 
-        # Fast heuristic pass for tools (e.g. GitHub REST API)
-        is_github_candidate = any(
-            w in p_lower for w in ["github", "git repo", "repository issues", "github repo", "list commits", "search github"]
-        )
-        if is_github_candidate and not is_rag_candidate:
+        # Fast heuristic pass for tools (e.g. GitHub REST API, Prometheus / Grafana MCP)
+        tool_keywords = [
+            "github", "git repo", "repository issues", "github repo", "list commits", "search github",
+            "prometheus", "grafana", "promql", "p99 latency", "gateway latency", "token spend",
+            "dashboard", "active alerts", "telemetry", "datasource"
+        ]
+        is_tool_candidate = any(w in p_lower for w in tool_keywords)
+        if is_tool_candidate and not is_rag_candidate:
             return (
                 ExecutionStrategy.TOOL_CALL,
                 RiskLevel.LOW,
-                "GitHub API tool invocation detected from user prompt.",
+                "Tool or MCP invocation detected from user prompt (GitHub / Prometheus / Grafana).",
                 [],
                 [],
             )
@@ -262,7 +265,7 @@ class Orchestrator:
             "1. 'DIRECT_LLM': General question (e.g. general Python coding, world facts, chit-chat, math) where document search is not relevant.\n"
             "2. 'RAG_AUTOMATED': Safe, informational question about internal documentation (Windows SeTakeOwnershipPrivilege, AWS lab setup, PostgreSQL pentesting, Wordlists). Safe to retrieve and answer.\n"
             "3. 'RAG_HUMAN_IN_THE_LOOP': High-risk, offensive, destructive, or ambiguous security questions (e.g., executing privilege escalation exploits, cracking passwords, exfiltrating data, or taking over systems) where a human security analyst must review and approve the search queries before execution.\n"
-            "4. 'TOOL_CALL': User requests inspecting GitHub repositories, reading code files, commits, issues, or searching open-source projects via GitHub REST API.\n\n"
+            "4. 'TOOL_CALL': User requests inspecting GitHub repositories, reading code files, commits, issues, searching open-source projects, or querying Prometheus PromQL metrics, Grafana dashboards, system latency, or alerts.\n\n"
             f"User Prompt: \"{prompt}\"\n\n"
             "Respond in JSON format with fields:\n"
             "{\n"
