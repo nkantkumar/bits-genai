@@ -38,6 +38,8 @@ WEEK1_DIR = Path(__file__).resolve().parent
 if str(WEEK1_DIR) not in sys.path:
     sys.path.insert(0, str(WEEK1_DIR))
 
+from storage import Chunk, VectorStoreFactory, PgVectorStore
+
 # Load environment
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
@@ -66,45 +68,6 @@ DOC_TITLES = {
 }
 
 
-class Chunk:
-    def __init__(
-        self,
-        chunk_id: str,
-        doc_name: str,
-        title: str,
-        page_start: int,
-        page_end: int,
-        chunk_index: int,
-        content: str,
-        token_count: int,
-        embedding: Optional[List[float]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ):
-        self.chunk_id = chunk_id
-        self.doc_name = doc_name
-        self.title = title
-        self.page_start = page_start
-        self.page_end = page_end
-        self.chunk_index = chunk_index
-        self.content = content
-        self.token_count = token_count
-        self.embedding = embedding
-        self.metadata = metadata or {}
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "chunk_id": self.chunk_id,
-            "doc_name": self.doc_name,
-            "title": self.title,
-            "page_start": self.page_start,
-            "page_end": self.page_end,
-            "chunk_index": self.chunk_index,
-            "content": self.content,
-            "token_count": self.token_count,
-            "metadata": self.metadata,
-        }
-
-
 class RagEngine:
     def __init__(
         self,
@@ -122,41 +85,19 @@ class RagEngine:
 
         # Clients
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        self.db_available = False
         self.in_memory_chunks: Dict[str, Chunk] = {}
 
-        # Initialize pgvector storage
-        self._init_database()
+        # Initialize storage via Factory Pattern (Adapter Pattern)
+        self.vector_store = VectorStoreFactory.create(self.postgres_url)
+        self.db_available = isinstance(self.vector_store, PgVectorStore)
+        if self.db_available:
+            logger.info("RagEngine attached to PostgreSQL + pgvector vector store.")
+        else:
+            logger.info("RagEngine operating in resilient in-memory mode.")
 
     def _init_database(self) -> None:
-        """Connect to PostgreSQL, enable pgvector extension, and create tables."""
-        try:
-            import psycopg2
-            conn = psycopg2.connect(self.postgres_url, connect_timeout=3)
-            cur = conn.cursor()
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS rag_chunks (
-                    id TEXT PRIMARY KEY,
-                    doc_name TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    page_start INT NOT NULL,
-                    page_end INT NOT NULL,
-                    chunk_index INT NOT NULL,
-                    content TEXT NOT NULL,
-                    token_count INT NOT NULL,
-                    embedding vector(1536),
-                    metadata JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit()
-            conn.close()
-            self.db_available = True
-            logger.info("PostgreSQL pgvector initialized successfully on port 5433.")
-        except Exception as e:
-            logger.warning(f"PostgreSQL pgvector unavailable ({e}). Operating in resilient in-memory mode.")
-            self.db_available = False
+        """Probe or re-initialize vector storage backend."""
+        self.db_available = self.vector_store.health_check()
 
     def get_embedding(self, text: str) -> List[float]:
         """Generate 1536-dim embedding vector via LiteLLM / OpenAI."""
@@ -350,42 +291,8 @@ class RagEngine:
         }
 
     def _persist_chunks_to_postgres(self, chunks: List[Chunk]) -> None:
-        """Upsert chunks with vector embeddings into PostgreSQL."""
-        import psycopg2
-        from pgvector.psycopg2 import register_vector
-
-        conn = psycopg2.connect(self.postgres_url)
-        register_vector(conn)
-        cur = conn.cursor()
-
-        for c in chunks:
-            cur.execute(
-                """
-                INSERT INTO rag_chunks (
-                    id, doc_name, title, page_start, page_end, chunk_index,
-                    content, token_count, embedding, metadata
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                    content = EXCLUDED.content,
-                    embedding = EXCLUDED.embedding,
-                    token_count = EXCLUDED.token_count,
-                    metadata = EXCLUDED.metadata;
-                """,
-                (
-                    c.chunk_id,
-                    c.doc_name,
-                    c.title,
-                    c.page_start,
-                    c.page_end,
-                    c.chunk_index,
-                    c.content,
-                    c.token_count,
-                    c.embedding,
-                    json.dumps(c.metadata),
-                ),
-            )
-        conn.commit()
-        conn.close()
+        """Upsert chunks with vector embeddings into VectorStore."""
+        self.vector_store.upsert_chunks(chunks)
 
     # -------------------------------------------------------------------------
     # 3. RAG-Fusion Query Generation
@@ -429,50 +336,15 @@ class RagEngine:
     # 4. Vector Search per Query
     # -------------------------------------------------------------------------
     def _search_vector(self, query_text: str, top_k: int = 5) -> List[Tuple[Chunk, float]]:
-        """Vector similarity search against pgvector (or fallback in-memory)."""
+        """Vector similarity search against VectorStore (or fallback in-memory)."""
         query_emb = self.get_embedding(query_text)
 
-        if self.db_available:
-            try:
-                import psycopg2
-                from pgvector.psycopg2 import register_vector
-
-                conn = psycopg2.connect(self.postgres_url)
-                register_vector(conn)
-                cur = conn.cursor()
-
-                cur.execute(
-                    """
-                    SELECT id, doc_name, title, page_start, page_end, chunk_index,
-                           content, token_count, metadata,
-                           1 - (embedding <=> %s::vector) AS cosine_sim
-                    FROM rag_chunks
-                    ORDER BY embedding <=> %s::vector ASC
-                    LIMIT %s;
-                    """,
-                    (query_emb, query_emb, top_k),
-                )
-                rows = cur.fetchall()
-                conn.close()
-
-                results = []
-                for row in rows:
-                    ch = Chunk(
-                        chunk_id=row[0],
-                        doc_name=row[1],
-                        title=row[2],
-                        page_start=row[3],
-                        page_end=row[4],
-                        chunk_index=row[5],
-                        content=row[6],
-                        token_count=row[7],
-                        metadata=row[8] if isinstance(row[8], dict) else {},
-                    )
-                    sim = float(row[9])
-                    results.append((ch, sim))
-                return results
-            except Exception as e:
-                logger.warning(f"PostgreSQL query failed ({e}), falling back to memory.")
+        try:
+            results = self.vector_store.similarity_search(query_emb, top_k=top_k)
+            if results:
+                return [(r.chunk, r.similarity) for r in results]
+        except Exception as e:
+            logger.warning(f"VectorStore query failed ({e}), falling back to memory.")
 
         # In-memory cosine similarity fallback
         scored: List[Tuple[Chunk, float]] = []
@@ -632,6 +504,13 @@ class RagEngine:
 
 # Global singleton instance
 rag_engine = RagEngine()
+
+# Auto-register with ToolRegistry
+try:
+    from ToolRegistry import tool_registry, RagKnowledgeTool
+    tool_registry.register(RagKnowledgeTool(rag_engine))
+except Exception as _e:
+    pass
 
 
 if __name__ == "__main__":

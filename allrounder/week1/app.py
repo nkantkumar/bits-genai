@@ -42,6 +42,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
 
 from InputGuardrails import InputGuardrails, PIIAction, GuardrailResult
+from OutputGuardrails import output_guardrails
+from ToolRegistry import tool_registry
 from SemanticCache import SemanticCache
 from SmartRouter import classify_by_rules, classify_by_llm, ask_with_cascade, CHEAP, SMART
 from RagEngine import rag_engine
@@ -142,6 +144,15 @@ def rag_stats() -> Dict[str, Any]:
 def rag_ingest() -> Dict[str, Any]:
     result = rag_engine.ingest_docs()
     return result
+
+
+@app.get("/api/tools")
+def list_tools() -> Dict[str, Any]:
+    """Returns all registered tools, external REST adapters, and MCP tools."""
+    return {
+        "count": len(tool_registry.list_tools()),
+        "tools": tool_registry.list_tools(),
+    }
 
 
 @app.get("/api/hitl/pending")
@@ -285,7 +296,10 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 model=chosen_model,
                 fused_queries=proposed_queries if proposed_queries else None,
             )
-            answer = rag_res["answer"]
+            raw_answer = rag_res["answer"]
+            ctx_texts = [c["content"] for c in rag_res.get("top_chunks", []) if isinstance(c, dict) and "content" in c]
+            out_guard = output_guardrails.inspect(raw_answer, retrieved_context=ctx_texts)
+            answer = out_guard.sanitized_output
 
             # Cache successful RAG response
             if req.use_cache:
@@ -304,6 +318,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "top_chunks": rag_res["top_chunks"],
                 "dedup_count": rag_res["dedup_count"],
                 "guardrail": guardrail_info,
+                "output_guardrail": out_guard.to_dict(),
                 "cache": cache_info,
                 "latency_ms": round(elapsed * 1000, 2),
                 "sanitized_prompt": sanitized_prompt,
@@ -319,7 +334,9 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
             max_tokens=600,
             temperature=0.2,
         )
-        answer = completion.choices[0].message.content or ""
+        raw_answer = completion.choices[0].message.content or ""
+        out_guard = output_guardrails.inspect(raw_answer)
+        answer = out_guard.sanitized_output
         model_returned = completion.model or chosen_model
     except Exception as e:
         elapsed = time.time() - start_time
@@ -351,6 +368,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
         "citations": [],
         "fused_queries": [],
         "guardrail": guardrail_info,
+        "output_guardrail": out_guard.to_dict(),
         "cache": cache_info,
         "latency_ms": round(elapsed * 1000, 2),
         "sanitized_prompt": sanitized_prompt,

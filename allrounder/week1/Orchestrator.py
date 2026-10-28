@@ -36,6 +36,8 @@ if str(WEEK1_DIR) not in sys.path:
     sys.path.insert(0, str(WEEK1_DIR))
 
 from RagEngine import rag_engine
+from ToolRegistry import tool_registry
+from OutputGuardrails import output_guardrails
 
 # Load environment
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
@@ -57,6 +59,7 @@ class ExecutionStrategy(str, Enum):
     DIRECT_LLM = "DIRECT_LLM"
     RAG_AUTOMATED = "RAG_AUTOMATED"
     RAG_HUMAN_IN_THE_LOOP = "RAG_HUMAN_IN_THE_LOOP"
+    TOOL_CALL = "TOOL_CALL"
 
 
 class RiskLevel(str, Enum):
@@ -95,6 +98,8 @@ class Orchestrator:
         self.api_key = api_key or "sk-dummy"
         self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
         self.pending_actions: Dict[str, PendingAction] = {}
+        self.tool_registry = tool_registry
+        self.output_guardrails = output_guardrails
 
         # Keywords that indicate internal documentation domain
         self.rag_domain_keywords = [
@@ -142,6 +147,10 @@ class Orchestrator:
             "weaponize",
             "privilege takeover",
         ]
+
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Executes a registered tool or MCP adapter via ToolRegistry."""
+        return self.tool_registry.execute(tool_name, arguments)
 
     # -------------------------------------------------------------------------
     # 1. Intent & Risk Classification
@@ -324,18 +333,25 @@ class Orchestrator:
                 model=action.model,
                 fused_queries=action.proposed_queries,
             )
+            ctx_texts = [c.get("content", "") for c in rag_res.get("top_chunks", []) if isinstance(c, dict)]
+            out_guard = self.output_guardrails.inspect(
+                output_text=rag_res["answer"],
+                retrieved_context=ctx_texts,
+            )
+            rag_res["answer"] = out_guard.sanitized_output
             action.result = rag_res
             return {
                 "success": True,
                 "status": "approved",
                 "action_id": action_id,
-                "response": rag_res["answer"],
+                "response": out_guard.sanitized_output,
                 "citations": rag_res["citations"],
                 "fused_queries": rag_res["fused_queries"],
                 "top_chunks": rag_res["top_chunks"],
                 "dedup_count": rag_res["dedup_count"],
                 "latency_ms": rag_res["latency_ms"],
                 "model_used": rag_res["model_used"],
+                "output_guardrails": out_guard.to_dict(),
             }
 
         elif decision == "modify":
@@ -349,18 +365,25 @@ class Orchestrator:
                 model=action.model,
                 fused_queries=active_queries,
             )
+            ctx_texts = [c.get("content", "") for c in rag_res.get("top_chunks", []) if isinstance(c, dict)]
+            out_guard = self.output_guardrails.inspect(
+                output_text=rag_res["answer"],
+                retrieved_context=ctx_texts,
+            )
+            rag_res["answer"] = out_guard.sanitized_output
             action.result = rag_res
             return {
                 "success": True,
                 "status": "modified_and_executed",
                 "action_id": action_id,
-                "response": rag_res["answer"],
+                "response": out_guard.sanitized_output,
                 "citations": rag_res["citations"],
                 "fused_queries": rag_res["fused_queries"],
                 "top_chunks": rag_res["top_chunks"],
                 "dedup_count": rag_res["dedup_count"],
                 "latency_ms": rag_res["latency_ms"],
                 "model_used": rag_res["model_used"],
+                "output_guardrails": out_guard.to_dict(),
             }
 
         elif decision == "reject":
@@ -380,17 +403,19 @@ class Orchestrator:
                 temperature=0.2,
             )
             answer = resp.choices[0].message.content or "Action cancelled by human administrator."
+            out_guard = self.output_guardrails.inspect(output_text=answer)
             return {
                 "success": True,
                 "status": "rejected",
                 "action_id": action_id,
-                "response": answer,
+                "response": out_guard.sanitized_output,
                 "citations": [],
                 "fused_queries": [],
                 "top_chunks": [],
                 "dedup_count": 0,
                 "latency_ms": 0,
                 "model_used": resp.model or action.model,
+                "output_guardrails": out_guard.to_dict(),
             }
 
         return {"success": False, "error": f"Invalid decision: {decision}"}
