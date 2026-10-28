@@ -102,6 +102,11 @@ class HitlDecisionRequest(BaseModel):
     modified_queries: Optional[List[str]] = Field(None, description="Optional modified query list")
 
 
+class ToolExecuteRequest(BaseModel):
+    tool_name: str = Field(..., description="Name of the registered tool to execute (e.g. 'github_api')")
+    params: Dict[str, Any] = Field(default_factory=dict, description="Parameters to pass to the tool adapter")
+
+
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
@@ -114,6 +119,7 @@ def health() -> Dict[str, Any]:
         "pgvector_connected": rag_engine.db_available,
         "indexed_chunks": len(rag_engine.in_memory_chunks),
         "pending_hitl_actions": len(orchestrator.list_pending_actions()),
+        "registered_tools": [t["name"] for t in tool_registry.list_tools()],
     }
 
 
@@ -158,9 +164,33 @@ def list_tools() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/tools/execute")
+def execute_tool_endpoint(req: ToolExecuteRequest) -> Dict[str, Any]:
+    """Executes a registered tool adapter (e.g. GitHub REST API) and returns the output."""
+    start_t = time.time()
+    try:
+        res = tool_registry.execute(req.tool_name, req.params)
+        return {
+            "success": True,
+            "tool_name": req.tool_name,
+            "params": req.params,
+            "result": res,
+            "elapsed_ms": round((time.time() - start_t) * 1000, 2),
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "tool_name": req.tool_name,
+            "params": req.params,
+            "error": str(e),
+            "elapsed_ms": round((time.time() - start_t) * 1000, 2),
+        }
+
+
 @app.get("/api/hitl/pending")
 def list_hitl_pending() -> List[Dict[str, Any]]:
     return orchestrator.list_pending_actions()
+
 
 
 def get_gateway_info(model_identifier: str) -> Dict[str, Any]:
@@ -358,6 +388,39 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "latency_ms": round(elapsed * 1000, 2),
                 "sanitized_prompt": sanitized_prompt,
             }
+
+        # 4c. Tool Calling Execution (GitHub REST API, MCP Adapters)
+        elif strat == ExecutionStrategy.TOOL_CALL:
+            tool_res = orchestrator.execute_with_tools(
+                prompt=sanitized_prompt, chosen_model=chosen_model
+            )
+            raw_answer = tool_res["answer"]
+            out_guard = output_guardrails.inspect(raw_answer)
+            answer = out_guard.sanitized_output
+
+            if req.use_cache:
+                app_cache.set(sanitized_prompt, answer, model="ui_router")
+
+            elapsed = time.time() - start_time
+            return {
+                "success": True,
+                "status": "completed",
+                "response": answer,
+                "model_used": tool_res["model_used"],
+                "strategy": strat.value,
+                "stage": "tool_call_execution",
+                "tool_calls": tool_res.get("tool_calls", []),
+                "tool_results": tool_res.get("tool_results", []),
+                "citations": [],
+                "fused_queries": [],
+                "guardrail": guardrail_info,
+                "output_guardrail": out_guard.to_dict(),
+                "cache": cache_info,
+                "gateway": get_gateway_info(chosen_model),
+                "latency_ms": round(elapsed * 1000, 2),
+                "sanitized_prompt": sanitized_prompt,
+            }
+
 
     # -------------------------------------------------------------
     # Step 5: Direct Upstream LLM Call (No RAG needed)
@@ -581,10 +644,20 @@ def index_page() -> str:
     .tag-hit { color: #a78bfa; }
     .tag-miss { color: #94a3b8; }
     .tag-rag { color: #38bdf8; }
+    .tag-tool { color: #f472b6; font-weight: 700; }
     .tag-hitl { color: #fbbf24; font-weight: 700; }
     .tag-direct { color: #22d3ee; font-weight: 700; }
     .tag-litellm { color: #c084fc; font-weight: 700; }
     .tag-openai { color: #34d399; font-weight: 700; }
+    .chip-tool {
+      border-color: rgba(244, 114, 182, 0.35);
+      background: rgba(244, 114, 182, 0.08);
+      color: #f472b6;
+    }
+    .chip-tool:hover {
+      background: rgba(244, 114, 182, 0.18);
+      border-color: #f472b6;
+    }
 
     /* Gateway & Strategy Route Banner */
     .route-banner {
@@ -699,6 +772,7 @@ def index_page() -> str:
       </div>
     </div>
     <div class="header-badges">
+      <div class="db-badge" style="background: rgba(244, 114, 182, 0.12); border-color: rgba(244, 114, 182, 0.3); color: #f472b6;">🛠️ GitHub API Tool (Adapter)</div>
       <div class="db-badge">PostgreSQL 16 + pgvector (5433)</div>
       <div class="status-badge">
         <span class="dot"></span>
@@ -751,7 +825,7 @@ def index_page() -> str:
 
       <!-- Textarea -->
       <div class="prompt-area">
-        <textarea id="promptInput" placeholder="Ask about SeTakeOwnershipPrivilege, AWS Lab Setup, PostgreSQL Pentesting, Wordlists, or test HITL triggers..."></textarea>
+        <textarea id="promptInput" placeholder="Ask about SeTakeOwnershipPrivilege, GitHub repos (octocat/Hello-World), Wordlists, or test HITL triggers..."></textarea>
       </div>
 
       <!-- Sample Chips -->
@@ -764,7 +838,9 @@ def index_page() -> str:
           <div class="chip" onclick="setPrompt('Can you explain the purpose of SeTakeOwnershipPrivilege in Windows?')">RAG: Windows PrivEsc</div>
           <div class="chip" onclick="setPrompt('What are default wordlists available in Kali Linux according to the guide?')">RAG: Wordlists Guide</div>
           <div class="chip chip-hitl" onclick="setPrompt('Provide step-by-step commands to exploit SeTakeOwnershipPrivilege and take over system files.')">⚠️ HITL: SeTakeOwnership Exploit</div>
-          <div class="chip chip-hitl" onclick="setPrompt('How to crack PostgreSQL database passwords using hashcat and brute force attack?')">⚠️ HITL: Postgres Password Attack</div>
+          <div class="chip chip-tool" onclick="setPrompt('Fetch GitHub repository details for octocat/Hello-World')">🛠️ GitHub: Repo Details</div>
+          <div class="chip chip-tool" onclick="setPrompt('Search GitHub for litellm AI Gateway repositories and summarize results')">🛠️ GitHub: Search Repos</div>
+          <div class="chip chip-tool" onclick="setPrompt('Read README file from octocat/Hello-World via GitHub tool')">🛠️ GitHub: File Content</div>
         </div>
       </div>
 
@@ -772,7 +848,31 @@ def index_page() -> str:
         <span>Process through Gateway</span>
         <span>→</span>
       </button>
+
+      <!-- Direct GitHub API Tool Runner -->
+      <div style="background: rgba(244, 114, 182, 0.05); border: 1px solid rgba(244, 114, 182, 0.2); border-radius: 8px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.25rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.75rem; font-weight: 700; color: #f472b6; text-transform: uppercase;">🛠️ Direct Tool Execution (GitHub REST API)</span>
+          <span id="ghStatusBadge" style="font-size: 0.7rem; color: #94a3b8; font-family: 'JetBrains Mono', monospace;">Adapter: github_api</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+          <select id="ghAction" onchange="onGhActionChange()" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
+            <option value="get_repo">Action: get_repo</option>
+            <option value="search_repositories">Action: search_repositories</option>
+            <option value="get_file_content">Action: get_file_content</option>
+            <option value="list_issues">Action: list_issues</option>
+            <option value="get_user">Action: get_user</option>
+            <option value="list_commits">Action: list_commits</option>
+          </select>
+          <input type="text" id="ghParam1" value="octocat/Hello-World" placeholder="owner/repo (e.g. octocat/Hello-World)" style="font-size: 0.78rem; padding: 0.35rem 0.6rem;">
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <input type="text" id="ghParam2" placeholder="Path (e.g. README) or Query / Username" style="font-size: 0.78rem; padding: 0.35rem 0.6rem; flex: 1;">
+          <button class="chip" onclick="executeGhDirect()" style="background: rgba(244, 114, 182, 0.2); border-color: rgba(244, 114, 182, 0.4); color: #f472b6; font-weight: 600; cursor: pointer;">Run Tool Directly</button>
+        </div>
+      </div>
     </div>
+
 
     <!-- Right: Pipeline Trace & Output -->
     <div class="panel">
@@ -951,6 +1051,8 @@ def index_page() -> str:
         traceOrchestrator.innerHTML = '<span class="tag-hitl">HITL_GATE</span>';
       } else if (data.stage === 'rag_automated') {
         traceOrchestrator.innerHTML = '<span class="tag-rag">RAG_AUTO</span>';
+      } else if (data.strategy === 'TOOL_CALL' || data.stage === 'tool_call_execution') {
+        traceOrchestrator.innerHTML = '<span class="tag-tool">TOOL_CALL</span>';
       } else if (data.strategy === 'DIRECT_LLM') {
         traceOrchestrator.innerHTML = '<span class="tag-direct">DIRECT_LLM</span>';
       } else {
@@ -1042,9 +1144,12 @@ def index_page() -> str:
       // Populate Route Banner (Strategy + Gateway info)
       if (data.gateway) {
         const isDirect = data.strategy === 'DIRECT_LLM' || (data.stage && data.stage.includes('direct_llm'));
-        const stratHtml = isDirect
-          ? '<span class="tag-direct">⚡ Orchestrator Strategy: DIRECT_LLM (General Knowledge — No RAG Search Needed)</span>'
-          : '<span class="tag-rag">📚 Orchestrator Strategy: RAG_AUTOMATED (PostgreSQL pgvector Grounded Search)</span>';
+        const isTool = data.strategy === 'TOOL_CALL' || (data.stage && data.stage.includes('tool_call'));
+        const stratHtml = isTool
+          ? '<span class="tag-tool" style="background: rgba(244, 114, 182, 0.12); border: 1px solid rgba(244, 114, 182, 0.3); padding: 0.2rem 0.5rem; border-radius: 4px;">🛠️ Orchestrator Strategy: TOOL_CALL (External GitHub REST API Invocation)</span>'
+          : (isDirect
+            ? '<span class="tag-direct">⚡ Orchestrator Strategy: DIRECT_LLM (General Knowledge — No RAG Search Needed)</span>'
+            : '<span class="tag-rag">📚 Orchestrator Strategy: RAG_AUTOMATED (PostgreSQL pgvector Grounded Search)</span>');
 
         const gatewayHtml = data.gateway.is_litellm
           ? `<span class="tag-litellm">🌐 Gateway Channel: <strong>${data.gateway.gateway_service}</strong> ➔ Upstream Provider: <strong>${data.gateway.upstream_provider} (${data.gateway.upstream_model})</strong></span>`
@@ -1068,6 +1173,21 @@ def index_page() -> str:
         formatted += `[Sanitized Prompt Sent to Gateway]:\\n${data.sanitized_prompt}\\n\\n`;
       }
       formatted += data.response;
+
+      if (data.tool_results && data.tool_results.length > 0) {
+        let toolsInfo = '\\n\\n═══════════════════════════════════════════════════════════\\n';
+        toolsInfo += '🛠️ TOOL CALL DISPATCH TELEMETRY (Adapter Pattern)\\n';
+        toolsInfo += '═══════════════════════════════════════════════════════════\\n';
+        data.tool_results.forEach((tr, i) => {
+          toolsInfo += `[Tool ${i+1}]: ${tr.tool} | Status: ${tr.result?.status || 'ok'}\\n`;
+          toolsInfo += `[Arguments]: ${JSON.stringify(tr.arguments)}\\n`;
+          if (tr.result && tr.result.rate_limit_remaining !== undefined) {
+            toolsInfo += `[GitHub Rate Limit]: ${tr.result.rate_limit_remaining}/${tr.result.rate_limit_total} remaining\\n`;
+          }
+        });
+        formatted += toolsInfo;
+      }
+
       outputBox.innerText = formatted;
     }
 
@@ -1091,6 +1211,69 @@ def index_page() -> str:
 
       citationsSection.style.display = 'flex';
     }
+
+    function onGhActionChange() {
+      const act = document.getElementById('ghAction').value;
+      const p1 = document.getElementById('ghParam1');
+      const p2 = document.getElementById('ghParam2');
+
+      if (act === 'get_repo' || act === 'list_issues' || act === 'list_commits') {
+        p1.placeholder = 'owner/repo (e.g. octocat/Hello-World)';
+        p2.placeholder = act === 'list_issues' ? 'State (open/closed/all)' : 'Optional ref / branch';
+      } else if (act === 'get_file_content') {
+        p1.placeholder = 'owner/repo (e.g. octocat/Hello-World)';
+        p2.placeholder = 'File path (e.g. README or src/app.py)';
+      } else if (act === 'search_repositories') {
+        p1.placeholder = 'Search Query (e.g. ai gateway python)';
+        p2.placeholder = 'Sort (stars, forks, updated)';
+      } else if (act === 'get_user') {
+        p1.placeholder = 'GitHub username (e.g. octocat)';
+        p2.placeholder = 'Unused';
+      }
+    }
+
+    async function executeGhDirect() {
+      const act = document.getElementById('ghAction').value;
+      const p1 = document.getElementById('ghParam1').value.trim();
+      const p2 = document.getElementById('ghParam2').value.trim();
+      const outputBox = document.getElementById('outputBox');
+      const badge = document.getElementById('ghStatusBadge');
+
+      outputBox.innerHTML = '<span style="color: #f472b6;">Executing GitHub REST API tool directly via /api/tools/execute...</span>';
+      badge.innerText = 'Calling GitHub...';
+
+      let params = { action: act };
+      if (act === 'get_repo' || act === 'list_issues' || act === 'list_commits') {
+        params.repo = p1;
+        if (p2) params[act === 'list_issues' ? 'state' : 'ref'] = p2;
+      } else if (act === 'get_file_content') {
+        params.repo = p1;
+        params.path = p2 || 'README';
+      } else if (act === 'search_repositories') {
+        params.query = p1 || 'ai gateway';
+        if (p2) params.sort = p2;
+      } else if (act === 'get_user') {
+        params.username = p1 || 'octocat';
+      }
+
+      try {
+        const res = await fetch('/api/tools/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tool_name: 'github_api',
+            params: params,
+          })
+        });
+        const data = await res.json();
+        badge.innerText = data.success ? 'HTTP 200 OK' : 'Execution Failed';
+        outputBox.innerText = `// Tool Execution Output via ToolRegistry: github_api\n// Elapsed: ${data.elapsed_ms}ms\n\n` + JSON.stringify(data.result, null, 2);
+      } catch (e) {
+        outputBox.innerHTML = `<span style="color: #f87171;">Tool execution failed: ${e.message}</span>`;
+        badge.innerText = 'Error';
+      }
+    }
+
   </script>
 </body>
 </html>

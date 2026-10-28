@@ -23,7 +23,14 @@ from storage import Chunk, InMemoryVectorStore, PgVectorStore, VectorStoreFactor
 from guardrails import InputGuardrails, OutputGuardrails, PIIAction
 from caching import SemanticCache
 from routing import RoutingDecision, RuleBasedStrategy, SmartRouter, CHEAP, SMART
-from tools import BaseTool, MCPToolAdapter, RestApiToolAdapter, ToolRegistry
+from tools import (
+    BaseTool,
+    GitHubApiTool,
+    GitHubToolAdapter,
+    MCPToolAdapter,
+    RestApiToolAdapter,
+    ToolRegistry,
+)
 from orchestration import ExecutionStrategy, Orchestrator, RiskLevel
 
 
@@ -155,6 +162,45 @@ class TestToolAndMCPRegistry(unittest.TestCase):
         self.registry.register(rest_tool)
         self.assertEqual(len(self.registry.list_tools()), 1)
 
+    def test_github_adapter_registration(self):
+        gh_tool = GitHubToolAdapter()
+        self.registry.register(gh_tool)
+        self.assertIsNotNone(self.registry.get_tool("github_api"))
+
+        schemas = self.registry.get_openai_tools()
+        gh_schema = next((s for s in schemas if s["function"]["name"] == "github_api"), None)
+        self.assertIsNotNone(gh_schema)
+        self.assertIn("action", gh_schema["function"]["parameters"]["properties"])
+        self.assertIn("owner", gh_schema["function"]["parameters"]["properties"])
+        self.assertIn("repo", gh_schema["function"]["parameters"]["properties"])
+
+    def test_github_adapter_get_repo(self):
+        gh_tool = GitHubToolAdapter()
+        res = gh_tool.execute({"action": "get_repo", "owner": "octocat", "repo": "Hello-World"})
+        self.assertIn(res.get("status"), ["success", "error"])
+        if res.get("status") == "success":
+            self.assertEqual(res.get("summary", {}).get("full_name"), "octocat/Hello-World")
+            self.assertIsNotNone(res.get("rate_limit_remaining"))
+
+    def test_github_adapter_file_content(self):
+        gh_tool = GitHubToolAdapter()
+        res = gh_tool.execute({
+            "action": "get_file_content",
+            "owner": "octocat",
+            "repo": "Hello-World",
+            "path": "README",
+        })
+        self.assertIn(res.get("status"), ["success", "error"])
+        if res.get("status") == "success":
+            content = res.get("file", {}).get("content", "").strip()
+            self.assertEqual(content, "Hello World!")
+
+    def test_github_adapter_validation(self):
+        gh_tool = GitHubToolAdapter()
+        err_res = gh_tool.execute({})
+        self.assertEqual(err_res.get("status"), "error")
+        self.assertIn("Missing required parameter 'action'", err_res.get("error"))
+
 
 class TestOrchestrator(unittest.TestCase):
     """Verifies Finite State Machine (FSM) & Human-in-the-Loop (HITL) Gateway."""
@@ -169,6 +215,12 @@ class TestOrchestrator(unittest.TestCase):
     def test_rag_automated_classification(self):
         strat, risk, reason, _, _ = self.orchestrator.decide_strategy("Explain SeTakeOwnershipPrivilege definition")
         self.assertEqual(strat, ExecutionStrategy.RAG_AUTOMATED)
+
+    def test_tool_call_classification(self):
+        strat, risk, reason, _, _ = self.orchestrator.decide_strategy(
+            "Fetch details for GitHub repository octocat/Hello-World"
+        )
+        self.assertEqual(strat, ExecutionStrategy.TOOL_CALL)
 
     def test_hitl_security_gate(self):
         hitl_query = (

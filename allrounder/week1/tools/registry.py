@@ -51,5 +51,16 @@ class ToolRegistry:
         return tool.execute(params, context=context)
 
 
+def create_default_registry() -> ToolRegistry:
+    """Creates registry with default out-of-the-box adapters (GitHub REST API, etc.)."""
+    reg = ToolRegistry()
+    try:
+        from .github_tool import GitHubToolAdapter
+        reg.register(GitHubToolAdapter())
+    except Exception as e:
+        logger.warning(f"Failed to auto-register default GitHub tool: {e}")
+    return reg
+
+
 # Global default registry instance
-tool_registry = ToolRegistry()
+tool_registry = create_default_registry()

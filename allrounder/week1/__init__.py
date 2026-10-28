@@ -14,7 +14,16 @@ Architectural Packages:
 from .guardrails import InputGuardrails, OutputGuardrails, input_guardrails, output_guardrails
 from .caching import SemanticCache
 from .routing import SmartRouter, smart_router
-from .tools import ToolRegistry, tool_registry, BaseTool, RagKnowledgeTool, RestApiToolAdapter, MCPToolAdapter
+from .tools import (
+    ToolRegistry,
+    tool_registry,
+    BaseTool,
+    RagKnowledgeTool,
+    RestApiToolAdapter,
+    MCPToolAdapter,
+    GitHubToolAdapter,
+    GitHubApiTool,
+)
 from .orchestration import Orchestrator, orchestrator, ExecutionStrategy, RiskLevel
 from .storage import VectorStore, VectorStoreFactory, PgVectorStore, InMemoryVectorStore, Chunk
 from .rag import RagEngine, rag_engine
@@ -33,6 +42,8 @@ __all__ = [
     "RagKnowledgeTool",
     "RestApiToolAdapter",
     "MCPToolAdapter",
+    "GitHubToolAdapter",
+    "GitHubApiTool",
     "Orchestrator",
     "orchestrator",
     "ExecutionStrategy",

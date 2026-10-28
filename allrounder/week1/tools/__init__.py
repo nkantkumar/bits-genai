@@ -6,6 +6,7 @@ from .base import BaseTool, ToolDefinition, ToolParameterSchema
 from .rag_tool import RagKnowledgeTool
 from .rest_tool import RestApiToolAdapter
 from .mcp_tool import MCPToolAdapter
+from .github_tool import GitHubToolAdapter, GitHubApiTool
 from .registry import ToolRegistry, tool_registry
 
 __all__ = [
@@ -15,6 +16,9 @@ __all__ = [
     "RagKnowledgeTool",
     "RestApiToolAdapter",
     "MCPToolAdapter",
+    "GitHubToolAdapter",
+    "GitHubApiTool",
     "ToolRegistry",
     "tool_registry",
 ]
+

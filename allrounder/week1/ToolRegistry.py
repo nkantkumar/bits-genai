@@ -13,6 +13,8 @@ if str(WEEK1_DIR) not in sys.path:
 
 from tools import (
     BaseTool,
+    GitHubApiTool,
+    GitHubToolAdapter,
     MCPToolAdapter,
     RagKnowledgeTool,
     RestApiToolAdapter,
@@ -24,6 +26,8 @@ from tools import (
 
 __all__ = [
     "BaseTool",
+    "GitHubApiTool",
+    "GitHubToolAdapter",
     "MCPToolAdapter",
     "RagKnowledgeTool",
     "RestApiToolAdapter",
@@ -32,6 +36,7 @@ __all__ = [
     "ToolRegistry",
     "tool_registry",
 ]
+
 
 if __name__ == "__main__":
     print("Registered tools:", [t["name"] for t in tool_registry.list_tools()])

@@ -105,6 +105,112 @@ class Orchestrator:
         """Executes a registered tool or MCP adapter via ToolRegistry."""
         return self.tool_registry.execute(tool_name, arguments)
 
+    def execute_with_tools(
+        self, prompt: str, chosen_model: str = "cheap"
+    ) -> Dict[str, Any]:
+        """
+        Executes an LLM call with function calling tools attached, dispatches any requested
+        tool executions via ToolRegistry, and returns the final synthesized response along
+        with tool telemetry.
+        """
+        tools_schema = self.tool_registry.get_openai_tools()
+        if not tools_schema:
+            r = self.client.chat.completions.create(
+                model=chosen_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=600,
+                temperature=0.2,
+            )
+            return {
+                "answer": r.choices[0].message.content or "",
+                "tool_calls": [],
+                "tool_results": [],
+                "model_used": r.model or chosen_model,
+            }
+
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            initial_resp = self.client.chat.completions.create(
+                model=chosen_model,
+                messages=messages,
+                tools=tools_schema,
+                tool_choice="auto",
+                max_tokens=600,
+                temperature=0.2,
+            )
+        except Exception as e:
+            logger.warning(f"Initial tool completion failed: {e}. Retrying without tools.")
+            initial_resp = self.client.chat.completions.create(
+                model=chosen_model,
+                messages=messages,
+                max_tokens=600,
+                temperature=0.2,
+            )
+
+        msg = initial_resp.choices[0].message
+        tool_calls = msg.tool_calls or []
+        executed_results = []
+
+        if not tool_calls:
+            return {
+                "answer": msg.content or "",
+                "tool_calls": [],
+                "tool_results": [],
+                "model_used": initial_resp.model or chosen_model,
+            }
+
+        messages.append(msg)
+        for tc in tool_calls:
+            t_name = tc.function.name
+            try:
+                t_args = json.loads(tc.function.arguments)
+            except Exception:
+                t_args = {}
+
+            logger.info(f"Executing tool '{t_name}' with args {t_args}")
+            try:
+                tool_result = self.tool_registry.execute(t_name, t_args)
+            except Exception as ex:
+                tool_result = {"status": "error", "error": str(ex)}
+
+            executed_results.append({
+                "tool": t_name,
+                "arguments": t_args,
+                "result": tool_result,
+            })
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": t_name,
+                "content": json.dumps(tool_result),
+            })
+
+        # Synthesize final answer incorporating tool execution results
+        try:
+            final_resp = self.client.chat.completions.create(
+                model=chosen_model,
+                messages=messages,
+                max_tokens=800,
+                temperature=0.2,
+            )
+            final_answer = final_resp.choices[0].message.content or ""
+            model_returned = final_resp.model or chosen_model
+        except Exception as e:
+            logger.error(f"Synthesis following tool execution failed: {e}")
+            final_answer = f"Executed {len(executed_results)} tool call(s):\n" + json.dumps(executed_results, indent=2)
+            model_returned = chosen_model
+
+        return {
+            "answer": final_answer,
+            "tool_calls": [
+                {"name": tc.function.name, "arguments": tc.function.arguments}
+                for tc in tool_calls
+            ],
+            "tool_results": executed_results,
+            "model_used": model_returned,
+        }
+
     def decide_strategy(
         self, prompt: str, chosen_model: str = "cheap"
     ) -> Tuple[ExecutionStrategy, RiskLevel, str, List[str], List[str]]:
@@ -122,6 +228,19 @@ class Orchestrator:
 
         matched_risk_terms = [t for t in self.hitl_risk_triggers if t in p_lower]
         is_high_risk = len(matched_risk_terms) > 0
+
+        # Fast heuristic pass for tools (e.g. GitHub REST API)
+        is_github_candidate = any(
+            w in p_lower for w in ["github", "git repo", "repository issues", "github repo", "list commits", "search github"]
+        )
+        if is_github_candidate and not is_rag_candidate:
+            return (
+                ExecutionStrategy.TOOL_CALL,
+                RiskLevel.LOW,
+                "GitHub API tool invocation detected from user prompt.",
+                [],
+                [],
+            )
 
         # Fast heuristic pass
         if not is_rag_candidate:
@@ -142,11 +261,12 @@ class Orchestrator:
             "You are an AI Security Gateway Orchestrator. Your role is to determine if an incoming user prompt:\n"
             "1. 'DIRECT_LLM': General question (e.g. general Python coding, world facts, chit-chat, math) where document search is not relevant.\n"
             "2. 'RAG_AUTOMATED': Safe, informational question about internal documentation (Windows SeTakeOwnershipPrivilege, AWS lab setup, PostgreSQL pentesting, Wordlists). Safe to retrieve and answer.\n"
-            "3. 'RAG_HUMAN_IN_THE_LOOP': High-risk, offensive, destructive, or ambiguous security questions (e.g., executing privilege escalation exploits, cracking passwords, exfiltrating data, or taking over systems) where a human security analyst must review and approve the search queries before execution.\n\n"
+            "3. 'RAG_HUMAN_IN_THE_LOOP': High-risk, offensive, destructive, or ambiguous security questions (e.g., executing privilege escalation exploits, cracking passwords, exfiltrating data, or taking over systems) where a human security analyst must review and approve the search queries before execution.\n"
+            "4. 'TOOL_CALL': User requests inspecting GitHub repositories, reading code files, commits, issues, or searching open-source projects via GitHub REST API.\n\n"
             f"User Prompt: \"{prompt}\"\n\n"
             "Respond in JSON format with fields:\n"
             "{\n"
-            "  \"strategy\": \"DIRECT_LLM\" | \"RAG_AUTOMATED\" | \"RAG_HUMAN_IN_THE_LOOP\",\n"
+            "  \"strategy\": \"DIRECT_LLM\" | \"RAG_AUTOMATED\" | \"RAG_HUMAN_IN_THE_LOOP\" | \"TOOL_CALL\",\n"
             "  \"risk_level\": \"LOW\" | \"MEDIUM\" | \"HIGH\" | \"CRITICAL\",\n"
             "  \"reason\": \"<Concise explanation>\",\n"
             "  \"target_docs\": [\"<Doc names like Windows PrivEsc, PostgreSQL Pentest, AWS Lab, Wordlists>\"],\n"
