@@ -111,3 +111,9 @@ python3 allrounder/week1/test_caching.py
 ```bash
 docker compose -f allrounder/week1/docker-compose.gateway.yml up -d
 ```
+
+####verify====
+docker exec -it ai_gateway_pgvector psql -U postgres -d rag_db -c "SELECT id, content FROM rag_chunks LIMIT 1;"
+or 
+
+psql "postgresql://postgres:postgres@localhost:5433/rag_db" -c "SELECT id, title, content FROM rag_chunks LIMIT 3;"
