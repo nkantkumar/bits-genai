@@ -163,6 +163,33 @@ def list_hitl_pending() -> List[Dict[str, Any]]:
     return orchestrator.list_pending_actions()
 
 
+def get_gateway_info(model_identifier: str) -> Dict[str, Any]:
+    """Identifies whether the request flows through LiteLLM (Proxy) or directly to OpenAI."""
+    is_litellm = "8080" in BASE_URL or "4000" in BASE_URL or "litellm" in BASE_URL.lower()
+    if "8080" in BASE_URL:
+        gateway_service = "LiteLLM (via Nginx Port 8080)"
+        channel_label = "LiteLLM ➔ OpenAI"
+    elif "4000" in BASE_URL:
+        gateway_service = "LiteLLM Direct (Port 4000)"
+        channel_label = "LiteLLM ➔ OpenAI"
+    else:
+        gateway_service = "Direct OpenAI API"
+        channel_label = "Direct OpenAI"
+
+    upstream_model = (
+        "gpt-4o-mini" if "cheap" in str(model_identifier).lower()
+        else ("gpt-4o" if "smart" in str(model_identifier).lower() else str(model_identifier))
+    )
+    return {
+        "is_litellm": is_litellm,
+        "gateway_service": gateway_service,
+        "channel_label": channel_label,
+        "endpoint": BASE_URL,
+        "upstream_provider": "OpenAI",
+        "upstream_model": upstream_model,
+    }
+
+
 @app.post("/api/hitl/respond")
 def respond_hitl(req: HitlDecisionRequest) -> Dict[str, Any]:
     start_time = time.time()
@@ -173,6 +200,7 @@ def respond_hitl(req: HitlDecisionRequest) -> Dict[str, Any]:
         modified_queries=req.modified_queries,
     )
     result["total_elapsed_ms"] = round((time.time() - start_time) * 1000, 2)
+    result["gateway"] = get_gateway_info(result.get("model_used", "cheap"))
     return result
 
 
@@ -212,6 +240,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "strategy": "NONE",
                 "guardrail": guardrail_info,
                 "cache": {"hit": False, "type": None, "similarity": 0.0},
+                "gateway": get_gateway_info("none"),
                 "latency_ms": round(elapsed * 1000, 2),
                 "sanitized_prompt": prompt,
             }
@@ -237,6 +266,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "strategy": "DIRECT_LLM",
                 "guardrail": guardrail_info,
                 "cache": cache_info,
+                "gateway": get_gateway_info("cheap"),
                 "citations": [],
                 "fused_queries": [],
                 "latency_ms": round(elapsed * 1000, 2),
@@ -288,6 +318,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "stage": "hitl_approval_required",
                 "guardrail": guardrail_info,
                 "cache": cache_info,
+                "gateway": get_gateway_info(chosen_model),
                 "latency_ms": round(elapsed * 1000, 2),
                 "sanitized_prompt": sanitized_prompt,
             }
@@ -323,6 +354,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
                 "guardrail": guardrail_info,
                 "output_guardrail": out_guard.to_dict(),
                 "cache": cache_info,
+                "gateway": get_gateway_info(chosen_model),
                 "latency_ms": round(elapsed * 1000, 2),
                 "sanitized_prompt": sanitized_prompt,
             }
@@ -352,6 +384,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
             "strategy": "DIRECT_LLM",
             "guardrail": guardrail_info,
             "cache": cache_info,
+            "gateway": get_gateway_info(chosen_model),
             "latency_ms": round(elapsed * 1000, 2),
             "sanitized_prompt": sanitized_prompt,
         }
@@ -373,6 +406,7 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
         "guardrail": guardrail_info,
         "output_guardrail": out_guard.to_dict(),
         "cache": cache_info,
+        "gateway": get_gateway_info(chosen_model),
         "latency_ms": round(elapsed * 1000, 2),
         "sanitized_prompt": sanitized_prompt,
     }
@@ -530,9 +564,9 @@ def index_page() -> str:
     .btn:hover { background: linear-gradient(135deg, #4f46e5, #4338ca); transform: translateY(-1px); }
     .btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-    /* 5-Stage Pipeline Trace */
+    /* 6-Stage Pipeline Trace */
     .pipeline-trace {
-      display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem;
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem;
     }
     .stage-card {
       background: rgba(0, 0, 0, 0.3); border: 1px solid var(--card-border);
@@ -548,6 +582,17 @@ def index_page() -> str:
     .tag-miss { color: #94a3b8; }
     .tag-rag { color: #38bdf8; }
     .tag-hitl { color: #fbbf24; font-weight: 700; }
+    .tag-direct { color: #22d3ee; font-weight: 700; }
+    .tag-litellm { color: #c084fc; font-weight: 700; }
+    .tag-openai { color: #34d399; font-weight: 700; }
+
+    /* Gateway & Strategy Route Banner */
+    .route-banner {
+      background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 8px; padding: 0.5rem 0.8rem; font-size: 0.75rem;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.6rem;
+    }
 
     /* Human-in-the-Loop Approval Card */
     .hitl-container {
@@ -736,7 +781,7 @@ def index_page() -> str:
         <button class="chip" onclick="clearCache()" style="background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #f87171;">Clear Cache</button>
       </div>
 
-      <!-- 5-Stage Pipeline Status -->
+      <!-- 6-Stage Pipeline Status -->
       <div class="pipeline-trace">
         <div class="stage-card">
           <div class="stage-name">1. Guardrail</div>
@@ -755,7 +800,11 @@ def index_page() -> str:
           <div class="stage-val" id="traceOrchestrator">—</div>
         </div>
         <div class="stage-card">
-          <div class="stage-name">5. Latency</div>
+          <div class="stage-name">5. Gateway</div>
+          <div class="stage-val" id="traceGateway">—</div>
+        </div>
+        <div class="stage-card">
+          <div class="stage-name">6. Latency</div>
           <div class="stage-val" id="traceLatency">—</div>
         </div>
       </div>
@@ -771,6 +820,9 @@ def index_page() -> str:
         </div>
         <div class="citation-list" id="citationList"></div>
       </div>
+
+      <!-- Gateway Route & Strategy Banner -->
+      <div id="routeBanner" class="route-banner" style="display: none;"></div>
 
       <!-- Output Display -->
       <div class="output-box" id="outputBox">
@@ -865,6 +917,7 @@ def index_page() -> str:
       const traceCache = document.getElementById('traceCache');
       const traceRouter = document.getElementById('traceRouter');
       const traceOrchestrator = document.getElementById('traceOrchestrator');
+      const traceGateway = document.getElementById('traceGateway');
       const traceLatency = document.getElementById('traceLatency');
 
       // 1. Guardrail
@@ -898,11 +951,24 @@ def index_page() -> str:
         traceOrchestrator.innerHTML = '<span class="tag-hitl">HITL_GATE</span>';
       } else if (data.stage === 'rag_automated') {
         traceOrchestrator.innerHTML = '<span class="tag-rag">RAG_AUTO</span>';
+      } else if (data.strategy === 'DIRECT_LLM') {
+        traceOrchestrator.innerHTML = '<span class="tag-direct">DIRECT_LLM</span>';
       } else {
         traceOrchestrator.innerHTML = `<span class="tag-allowed">${data.strategy || 'DIRECT'}</span>`;
       }
 
-      // 5. Latency
+      // 5. Gateway Channel (LiteLLM vs OpenAI)
+      if (data.gateway) {
+        if (data.gateway.is_litellm) {
+          traceGateway.innerHTML = `<span class="tag-litellm" title="Routed via ${data.gateway.gateway_service}">LiteLLM ➔ OpenAI</span>`;
+        } else {
+          traceGateway.innerHTML = `<span class="tag-openai" title="Direct Upstream">Direct OpenAI</span>`;
+        }
+      } else {
+        traceGateway.innerHTML = '<span class="tag-litellm">LiteLLM</span>';
+      }
+
+      // 6. Latency
       traceLatency.innerText = (data.latency_ms || 0) + ' ms';
     }
 
@@ -963,11 +1029,7 @@ def index_page() -> str:
         const data = await res.json();
         document.getElementById('hitlContainer').style.display = 'none';
 
-        if (data.citations && data.citations.length > 0) {
-          renderCitations(data.citations, data.dedup_count);
-        }
-
-        outputBox.innerText = data.response;
+        renderAnswer(data);
       } catch (e) {
         outputBox.innerHTML = `<span style="color: #f87171;">Action Resolution Failed: ${e.message}</span>`;
       }
@@ -975,10 +1037,30 @@ def index_page() -> str:
 
     function renderAnswer(data) {
       const outputBox = document.getElementById('outputBox');
+      const routeBanner = document.getElementById('routeBanner');
+
+      // Populate Route Banner (Strategy + Gateway info)
+      if (data.gateway) {
+        const isDirect = data.strategy === 'DIRECT_LLM' || (data.stage && data.stage.includes('direct_llm'));
+        const stratHtml = isDirect
+          ? '<span class="tag-direct">⚡ Orchestrator Strategy: DIRECT_LLM (General Knowledge — No RAG Search Needed)</span>'
+          : '<span class="tag-rag">📚 Orchestrator Strategy: RAG_AUTOMATED (PostgreSQL pgvector Grounded Search)</span>';
+
+        const gatewayHtml = data.gateway.is_litellm
+          ? `<span class="tag-litellm">🌐 Gateway Channel: <strong>${data.gateway.gateway_service}</strong> ➔ Upstream Provider: <strong>${data.gateway.upstream_provider} (${data.gateway.upstream_model})</strong></span>`
+          : `<span class="tag-openai">⚡ Upstream Channel: <strong>Direct OpenAI</strong> (${data.gateway.upstream_model})</span>`;
+
+        routeBanner.innerHTML = `${stratHtml} ${gatewayHtml}`;
+        routeBanner.style.display = 'flex';
+      } else {
+        routeBanner.style.display = 'none';
+      }
 
       // Citations if RAG was run
       if (data.citations && data.citations.length > 0) {
         renderCitations(data.citations, data.dedup_count);
+      } else {
+        document.getElementById('citationsSection').style.display = 'none';
       }
 
       let formatted = '';

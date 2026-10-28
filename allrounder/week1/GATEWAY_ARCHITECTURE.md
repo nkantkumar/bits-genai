@@ -226,7 +226,127 @@ allrounder/week1/
 
 ---
 
+## Docker Infrastructure Stack (`docker-compose.gateway.yml`)
+
+The production AI Gateway relies on four containerized infrastructure services orchestrated via Docker Compose:
+
+| Container Service | Image | Host Port | Purpose |
+| :--- | :--- | :--- | :--- |
+| **`nginx`** | `nginx:alpine` | `8080:80` | Edge reverse proxy, IP rate limiting, DDoS protection, SSE streaming pass-through (`proxy_buffering off;`). |
+| **`litellm`** | `ghcr.io/berriai/litellm:main-latest` | `4000:4000` | AI Gateway, virtual model routing (`cheap` vs `smart`), spend tracking, multi-provider failover. |
+| **`redis`** | `redis/redis-stack-server:latest` | `6379:6379` | Exact prompt hash caching $O(1)$ and semantic vector similarity search cache. |
+| **`pgvector`** | `pgvector/pgvector:pg16` | `5433:5432` | PostgreSQL 16 database with `pgvector` extension and HNSW vector indexing for RAG knowledge chunks. |
+
+### Complete `docker-compose.gateway.yml` Script
+
+```yaml
+services:
+  # -----------------------------------------------------------------------------
+  # 1. Edge Reverse Proxy (Nginx)
+  # - TLS termination, IP-based rate limiting, DDoS buffer, and SSE stream pass-through
+  # -----------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: ai_gateway_nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"      # Public entry point (80/443 in production)
+    volumes:
+      - ./nginx.docker.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - litellm
+    networks:
+      - ai_gateway_net
+
+  # -----------------------------------------------------------------------------
+  # 2. AI Gateway Layer (LiteLLM)
+  # - Model routing ("cheap" vs "smart"), virtual keys, budgets, retry/fallbacks
+  # - Exact Match & Semantic Vector Caching enabled via config.yaml
+  # -----------------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: ai_gateway_litellm
+    restart: unless-stopped
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env_file:
+      - ../.env
+    environment:
+      - STORE_MODEL_IN_DB=True
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - ai_gateway_net
+
+  # -----------------------------------------------------------------------------
+  # 3. Cache & Vector Store (Redis Stack with Vector Search)
+  # - Powers exact prompt caching and semantic vector similarity search
+  # -----------------------------------------------------------------------------
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: ai_gateway_redis
+    restart: unless-stopped
+    environment:
+      - REDIS_ARGS=--save 60 1 --loglevel notice
+    ports:
+      - "6379:6379"    # Expose for local testing/monitoring
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ai_gateway_net
+
+  # -----------------------------------------------------------------------------
+  # 4. Vector Database (PostgreSQL 16 with pgvector extension)
+  # - Used for document storage, semantic chunk embeddings, and similarity search
+  # -----------------------------------------------------------------------------
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: ai_gateway_pgvector
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=rag_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5433:5432"    # Map to host port 5433 to avoid collision with local Postgres on 5432
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ai_gateway_net
+
+volumes:
+  pgvector_data:
+
+networks:
+  ai_gateway_net:
+    driver: bridge
+```
+
+---
+
 ## Verification & Execution Guide
+
+### 0. Start Containerized Infrastructure Stack
+```bash
+docker compose -f allrounder/week1/docker-compose.gateway.yml up -d
+```
+Check running container statuses and health probes:
+```bash
+docker compose -f allrounder/week1/docker-compose.gateway.yml ps
+```
 
 ### 1. Run Complete Architecture Test Suite
 ```bash
