@@ -24,6 +24,8 @@ if str(WEEK1_DIR) not in sys.path:
 
 from SemanticCache import SemanticCache
 from InputGuardrails import InputGuardrails, PIIAction, GuardrailResult
+from Orchestrator import orchestrator, ExecutionStrategy
+from RagEngine import rag_engine
 
 # Initialize Semantic & Prompt Cache (threshold 0.80 for semantic similarity)
 router_cache = SemanticCache(similarity_threshold=0.80)
@@ -120,13 +122,15 @@ def ask(
     strategy: str = "rules",
     use_cache: bool = True,
     use_guardrails: bool = True,
+    use_orchestrator: bool = True,
 ) -> tuple[str, str, Optional[GuardrailResult]]:
     """
     Executes the enterprise defensive pipeline:
     1. Input Guardrails (blocks prompt injection, sanitizes/masks PII)
     2. Semantic & Prompt Cache (checks exact hash & vector similarity)
     3. Smart Router (classifies difficulty -> cheap vs smart)
-    4. Caches valid output
+    4. Orchestrator (decides DIRECT_LLM, RAG_AUTOMATED, or RAG_HUMAN_IN_THE_LOOP)
+    5. Caches valid output
     """
     guardrail_info: Optional[GuardrailResult] = None
     active_prompt = prompt
@@ -148,17 +152,54 @@ def ask(
         if cached_resp is not None:
             return cached_resp, f"cache ({hit_type}, sim={score:.2f})", guardrail_info
 
-    # 3. Execute Router
+    # 3. Execute Router (Difficulty / Tier Classification)
     if strategy == "cascade":
-        answer, model_used = ask_with_cascade(active_prompt)
+        chosen = SMART
     else:
         chosen = classify_by_llm(active_prompt) if strategy == "llm" else classify_by_rules(active_prompt)
-        r = client.chat.completions.create(
-            model=chosen, messages=[{"role": "user", "content": active_prompt}]
-        )
-        answer, model_used = r.choices[0].message.content or "", r.model
 
-    # 4. Save to Cache
+    # 4. Orchestrator (Decide: DIRECT_LLM vs RAG_AUTOMATED vs RAG_HUMAN_IN_THE_LOOP)
+    if use_orchestrator:
+        strat, risk, reason, queries, docs = orchestrator.decide_strategy(active_prompt, chosen_model=chosen)
+        if strat == ExecutionStrategy.RAG_AUTOMATED:
+            rag_res = rag_engine.query(active_prompt, model=chosen, fused_queries=queries)
+            answer = rag_res["answer"]
+            model_used = f"rag_automated ({chosen})"
+        elif strat == ExecutionStrategy.RAG_HUMAN_IN_THE_LOOP:
+            action = orchestrator.create_pending_action(
+                user_prompt=active_prompt,
+                model=chosen,
+                strategy=strat,
+                risk_level=risk,
+                reason=reason,
+                proposed_queries=queries,
+                target_docs=docs,
+            )
+            answer = (
+                f"[HUMAN-IN-THE-LOOP REQUIRED - Action ID: {action.action_id}]\n"
+                f"Risk Reason: {reason}\n"
+                f"Proposed Queries for Review: {queries}"
+            )
+            model_used = f"hitl_pending ({action.action_id})"
+            # Do not cache pending HITL prompts
+            return answer, model_used, guardrail_info
+        else:
+            # DIRECT_LLM
+            r = client.chat.completions.create(
+                model=chosen, messages=[{"role": "user", "content": active_prompt}]
+            )
+            answer, model_used = r.choices[0].message.content or "", r.model
+    else:
+        # Without Orchestrator
+        if strategy == "cascade":
+            answer, model_used = ask_with_cascade(active_prompt)
+        else:
+            r = client.chat.completions.create(
+                model=chosen, messages=[{"role": "user", "content": active_prompt}]
+            )
+            answer, model_used = r.choices[0].message.content or "", r.model
+
+    # 5. Save to Cache
     if use_cache:
         router_cache.set(active_prompt, answer, model="router")
 
