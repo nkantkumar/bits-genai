@@ -88,7 +88,7 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 class PromptRequest(BaseModel):
     prompt: str = Field(..., description="The user prompt to process")
-    strategy: str = Field("rules", description="Routing strategy: rules, llm, or cascade")
+    strategy: str = Field("rules", description="Routing strategy: rules, jev, llm, or cascade")
     use_cache: bool = Field(True, description="Enable Exact & Semantic Caching")
     use_guardrails: bool = Field(True, description="Enable Input Guardrails")
     pii_action: str = Field("MASK", description="PII handling: MASK or BLOCK")
@@ -307,6 +307,9 @@ def process_chat(req: PromptRequest) -> Dict[str, Any]:
         chosen_model = SMART
     elif req.strategy == "llm":
         chosen_model = classify_by_llm(sanitized_prompt)
+    elif req.strategy in ("jev", "system_one"):
+        decision = smart_router.route(sanitized_prompt, strategy_name="jev")
+        chosen_model = decision.selected_model
     else:
         chosen_model = classify_by_rules(sanitized_prompt)
 
@@ -791,6 +794,7 @@ def index_page() -> str:
           <label>Router Model Tier</label>
           <select id="strategy">
             <option value="rules">Rules Classifier (Fast)</option>
+            <option value="jev">Jev System One (Discriminative Fast)</option>
             <option value="llm">LLM Classifier</option>
             <option value="cascade">Cascade Escalation</option>
           </select>

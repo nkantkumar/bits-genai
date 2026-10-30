@@ -13,6 +13,7 @@ if str(WEEK1_DIR) not in sys.path:
 
 from guardrails import (
     GroundednessFilter,
+    JevGroundednessFilter,
     OutputGuardrailResult,
     OutputGuardrails,
     OutputViolationType,
@@ -23,6 +24,7 @@ from guardrails import (
 
 __all__ = [
     "GroundednessFilter",
+    "JevGroundednessFilter",
     "OutputGuardrailResult",
     "OutputGuardrails",
     "OutputViolationType",

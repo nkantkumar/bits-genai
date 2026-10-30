@@ -22,3 +22,6 @@ uvicorn>=0.28.0
 # Logging & Environment Management
 structlog>=24.0.0
 python-dotenv>=1.0.0
+
+# Fast System One Decision Models & Classification (Jev)
+typesafe-sdk>=0.7.0

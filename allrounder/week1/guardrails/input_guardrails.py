@@ -8,12 +8,22 @@ Enterprise-grade defensive shields for LLM applications:
 4. Harmful & Toxic Intent Filtering
 """
 
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+try:
+    from typesafe_sdk import Choice, Noul, TypeSafeClient
+    TYPESAFE_AVAILABLE = True
+except ImportError:
+    TYPESAFE_AVAILABLE = False
 
 from .base import BaseGuardrailFilter, GuardrailAction, GuardrailContext, GuardrailPipeline
+
+logger = logging.getLogger("InputGuardrails")
 
 
 class PIIAction(str, Enum):
@@ -161,6 +171,70 @@ class ToxicityFilter(BaseGuardrailFilter):
 
 
 # -----------------------------------------------------------------------------
+# Concrete Filter 5: Jev System One Safety & Jailbreak Filter
+# -----------------------------------------------------------------------------
+class JevSafetyFilter(BaseGuardrailFilter):
+    """
+    Concrete Filter 5: Jev System One Safety & Jailbreak Filter.
+    Non-autoregressive discriminative model evaluating prompt injection,
+    jailbreak attempts, and harmful intent with calibrated probabilities.
+    """
+
+    def __init__(
+        self,
+        risk_threshold: float = 0.75,
+        enabled: bool = True,
+        api_key: Optional[str] = None,
+    ):
+        super().__init__(enabled=enabled)
+        self.risk_threshold = risk_threshold
+        self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
+        self._client: Optional[Any] = None
+        if TYPESAFE_AVAILABLE and self.api_key:
+            try:
+                self._client = TypeSafeClient(api_key=self.api_key)
+            except Exception as e:
+                logger.warning(f"JevSafetyFilter client initialization failed: {e}")
+
+    def process(self, context: GuardrailContext) -> GuardrailContext:
+        if not self._client:
+            return context
+
+        try:
+            resp = self._client.system_one(
+                state=f"User prompt: {context.current_text}",
+                questions={
+                    "is_jailbreak": Noul(),
+                    "is_harmful": Noul(),
+                },
+            )
+            jailbreak_prob = resp.answers["is_jailbreak"].noul
+            harmful_prob = resp.answers["is_harmful"].noul
+            calibrated_risk = max(jailbreak_prob, harmful_prob)
+            context.risk_score = max(context.risk_score, calibrated_risk)
+            context.metadata["jev_safety_score"] = {
+                "jailbreak_prob": jailbreak_prob,
+                "harmful_prob": harmful_prob,
+            }
+
+            if calibrated_risk >= self.risk_threshold:
+                violation = (
+                    ViolationType.PROMPT_INJECTION.value
+                    if jailbreak_prob >= harmful_prob
+                    else ViolationType.TOXICITY.value
+                )
+                context.block(
+                    violation=violation,
+                    reason=f"Jev System One detected safety violation (calibrated risk: {calibrated_risk:.2f}).",
+                    risk_score=calibrated_risk,
+                )
+        except Exception as e:
+            logger.warning(f"JevSafetyFilter evaluation failed: {e}")
+
+        return context
+
+
+# -----------------------------------------------------------------------------
 # Facade: InputGuardrails
 # -----------------------------------------------------------------------------
 class InputGuardrails:
@@ -173,12 +247,14 @@ class InputGuardrails:
         enable_injection_guard: bool = True,
         enable_pii_guard: bool = True,
         enable_toxicity_guard: bool = True,
+        enable_jev_guard: bool = True,
     ):
         self.pii_action = pii_action
         self.max_characters = max_characters
         self.enable_injection_guard = enable_injection_guard
         self.enable_pii_guard = enable_pii_guard
         self.enable_toxicity_guard = enable_toxicity_guard
+        self.enable_jev_guard = enable_jev_guard
 
         # Assemble the Chain of Responsibility pipeline
         self.pipeline = GuardrailPipeline([
@@ -186,6 +262,7 @@ class InputGuardrails:
             PromptInjectionFilter(enabled=self.enable_injection_guard),
             PIIMaskingFilter(pii_action=self.pii_action, enabled=self.enable_pii_guard),
             ToxicityFilter(enabled=self.enable_toxicity_guard),
+            JevSafetyFilter(enabled=self.enable_jev_guard),
         ])
 
     def inspect(self, prompt: str) -> GuardrailResult:

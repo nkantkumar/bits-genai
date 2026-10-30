@@ -10,10 +10,17 @@ Enterprise Defensive Shield for Outbound LLM Responses:
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
+
+try:
+    from typesafe_sdk import Noul, TypeSafeClient
+    TYPESAFE_AVAILABLE = True
+except ImportError:
+    TYPESAFE_AVAILABLE = False
 
 from .base import BaseGuardrailFilter, GuardrailAction, GuardrailContext, GuardrailPipeline
 
@@ -165,16 +172,80 @@ class SchemaValidationFilter(BaseGuardrailFilter):
 
 
 # -----------------------------------------------------------------------------
+# Concrete Filter 4: Jev System One Groundedness & Hallucination Filter
+# -----------------------------------------------------------------------------
+class JevGroundednessFilter(BaseGuardrailFilter):
+    """
+    Concrete Filter 4: Jev System One Groundedness & Hallucination Filter.
+    Discriminative NLI entailment evaluation determining whether generated claims
+    are faithful to retrieved context chunks, avoiding lexical bag-of-words limitations.
+    """
+
+    def __init__(
+        self,
+        min_confidence: float = 0.50,
+        enabled: bool = True,
+        api_key: Optional[str] = None,
+    ):
+        super().__init__(enabled=enabled)
+        self.min_confidence = min_confidence
+        self.api_key = api_key or os.getenv("TYPESAFE_API_KEY")
+        self._client: Optional[Any] = None
+        if TYPESAFE_AVAILABLE and self.api_key:
+            try:
+                self._client = TypeSafeClient(api_key=self.api_key)
+            except Exception as e:
+                logger.warning(f"JevGroundednessFilter client init error: {e}")
+
+    def process(self, context: GuardrailContext) -> GuardrailContext:
+        retrieved_context = context.metadata.get("retrieved_context")
+        if not retrieved_context or not self._client:
+            return context
+
+        try:
+            context_text = "\n".join(retrieved_context)
+            resp = self._client.system_one(
+                state=(
+                    f"Retrieved Document Context:\n{context_text}\n\n"
+                    f"Generated Output to Verify:\n{context.current_text}"
+                ),
+                questions={
+                    "is_grounded_in_context": Noul(),
+                },
+            )
+            grounded_prob = resp.answers["is_grounded_in_context"].noul
+            context.metadata["jev_groundedness_score"] = grounded_prob
+
+            if grounded_prob < self.min_confidence:
+                if OutputViolationType.LOW_GROUNDEDNESS.value not in context.violations:
+                    context.violations.append(OutputViolationType.LOW_GROUNDEDNESS.value)
+                context.risk_score = max(context.risk_score, 1.0 - grounded_prob)
+                logger.warning(
+                    f"Jev Groundedness warning: calibrated faith score {grounded_prob:.3f} < {self.min_confidence}"
+                )
+        except Exception as e:
+            logger.warning(f"JevGroundednessFilter evaluation failed: {e}")
+
+        return context
+
+
+# -----------------------------------------------------------------------------
 # Facade: OutputGuardrails
 # -----------------------------------------------------------------------------
 class OutputGuardrails:
     """Enterprise outbound defensive inspection pipeline using Chain of Responsibility."""
 
-    def __init__(self, min_groundedness_score: float = 0.25):
+    def __init__(
+        self,
+        min_groundedness_score: float = 0.25,
+        enable_jev_groundedness: bool = True,
+    ):
         self.min_groundedness_score = min_groundedness_score
+        self.enable_jev_groundedness = enable_jev_groundedness
         self.pipeline = GuardrailPipeline([
             SecretLeakageFilter(),
             GroundednessFilter(min_groundedness_score=self.min_groundedness_score),
+            JevGroundednessFilter(enabled=self.enable_jev_groundedness),
             SchemaValidationFilter(),
         ])
 

@@ -19,6 +19,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 try:
+    from typesafe_sdk import Choice, Noul, TypeSafeClient
+    TYPESAFE_AVAILABLE = True
+except ImportError:
+    TYPESAFE_AVAILABLE = False
+
+try:
     from ..guardrails import output_guardrails
     from ..rag import rag_engine
     from ..tools import tool_registry
@@ -53,6 +59,15 @@ class Orchestrator:
         self.pending_actions: Dict[str, PendingAction] = {}
         self.tool_registry = tool_registry
         self.output_guardrails = output_guardrails
+
+        # System One Decision Model (Jev / TypeSafe AI)
+        self.typesafe_api_key = os.getenv("TYPESAFE_API_KEY")
+        self.jev_client: Optional[Any] = None
+        if TYPESAFE_AVAILABLE and self.typesafe_api_key:
+            try:
+                self.jev_client = TypeSafeClient(api_key=self.typesafe_api_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize TypeSafeClient for Jev in Orchestrator: {e}")
 
         # Domain keywords indicating documentation affinity
         self.rag_domain_keywords = [
@@ -220,8 +235,79 @@ class Orchestrator:
             "model_used": model_returned,
         }
 
+    def _infer_target_docs(self, prompt: str) -> List[str]:
+        p_lower = prompt.lower()
+        docs = []
+        if any(w in p_lower for w in ["setakeownership", "takeown", "icacls", "windows", "privilege escalation", "privesc"]):
+            docs.append("Windows Privilege Escalation: SeTakeOwnershipPrivilege")
+        if any(w in p_lower for w in ["aws", "cloudtrail", "vpc", "peering", "penetration testing lab"]):
+            docs.append("AWS: Penetration Testing Lab Setup")
+        if any(w in p_lower for w in ["postgres", "postgresql", "pg_hba.conf", "hashcat postgres"]):
+            docs.append("PostgreSQL Penetration Testing")
+        if any(w in p_lower for w in ["wordlist", "rockyou", "seclists", "dirb", "wfuzz", "cewl", "crunch", "cupp"]):
+            docs.append("Comprehensive Guide on Wordlists")
+        return docs or ["Indexed Security Documentation"]
+
+    def evaluate_with_jev(
+        self, prompt: str
+    ) -> Optional[Tuple[ExecutionStrategy, RiskLevel, str, List[str], List[str]]]:
+        """
+        Uses Jev System One decision model to rapidly classify intent, execution strategy,
+        and calibrated risk probability without autoregressive token generation.
+        """
+        if not self.jev_client:
+            return None
+
+        try:
+            resp = self.jev_client.system_one(
+                state=f"User Query for Security Orchestration:\n{prompt}",
+                questions={
+                    "strategy": Choice(
+                        criteria={
+                            "DIRECT_LLM": "General queries, world facts, math, or coding questions unrelated to internal security documentation.",
+                            "RAG_AUTOMATED": "Safe informational questions querying indexed documentation on Windows SeTakeOwnershipPrivilege, AWS labs, PostgreSQL pentesting, or Wordlists.",
+                            "RAG_HUMAN_IN_THE_LOOP": "Offensive security actions, exploits, privilege escalation payloads, hash cracking, or system takeover requiring human security sign-off.",
+                            "TOOL_CALL": "Requests to inspect GitHub repos, commits, files, or query Prometheus PromQL metrics, Grafana dashboards, or telemetry.",
+                        }
+                    ),
+                    "risk_level": Choice(
+                        criteria={
+                            "LOW": "Benign informational or general query.",
+                            "MEDIUM": "Defensive security concept or architectural inquiry.",
+                            "HIGH": "Potentially offensive security request, exploit payload, or unauthorized system takeover.",
+                            "CRITICAL": "Severe malicious exploit, weaponization, or destructive data loss action.",
+                        }
+                    ),
+                    "is_offensive": Noul(),
+                },
+            )
+            strat_val = resp.answers["strategy"].choice
+            risk_val = resp.answers["risk_level"].choice
+            is_offensive_prob = resp.answers["is_offensive"].noul
+            strat_conf = getattr(resp.answers["strategy"], "confidence", 0.95)
+
+            # Map to Enums
+            strategy = ExecutionStrategy(strat_val)
+            risk_level = RiskLevel(risk_val)
+
+            target_docs = self._infer_target_docs(prompt)
+            proposed_queries = rag_engine.generate_fused_queries(prompt, num_queries=3) if strategy in (ExecutionStrategy.RAG_AUTOMATED, ExecutionStrategy.RAG_HUMAN_IN_THE_LOOP) else []
+
+            # If offensive probability exceeds high-risk threshold, enforce HITL
+            if is_offensive_prob >= 0.70 and strategy != ExecutionStrategy.RAG_HUMAN_IN_THE_LOOP:
+                strategy = ExecutionStrategy.RAG_HUMAN_IN_THE_LOOP
+                risk_level = RiskLevel.HIGH
+                reason = f"Jev System One high-risk offensive probability detected ({is_offensive_prob:.2f}). Mandatory human analyst sign-off."
+            else:
+                reason = f"Jev System One calibrated classification: {strat_val} (confidence: {strat_conf:.2f}, offensive P: {is_offensive_prob:.2f})"
+
+            return strategy, risk_level, reason, proposed_queries, target_docs
+        except Exception as e:
+            logger.warning(f"Jev evaluation failed: {e}")
+            return None
+
     def decide_strategy(
-        self, prompt: str, chosen_model: str = "cheap"
+        self, prompt: str, chosen_model: str = "cheap", use_jev: bool = True
     ) -> Tuple[ExecutionStrategy, RiskLevel, str, List[str], List[str]]:
         """
         Evaluates prompt to determine:
@@ -231,6 +317,11 @@ class Orchestrator:
         - Proposed queries: RAG-Fusion search variations
         - Target docs: Candidate documents
         """
+        # Fast Jev System One non-autoregressive decision if active
+        if use_jev and self.jev_client:
+            jev_decision = self.evaluate_with_jev(prompt)
+            if jev_decision:
+                return jev_decision
         p_lower = prompt.lower()
         matched_domain_terms = [k for k in self.rag_domain_keywords if k in p_lower]
         is_rag_candidate = len(matched_domain_terms) > 0

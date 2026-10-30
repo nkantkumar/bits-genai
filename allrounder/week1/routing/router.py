@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from .base import CHEAP, SMART, RoutingDecision, RoutingStrategy
-from .strategies import CostCascadingStrategy, LLMJudgeStrategy, RuleBasedStrategy
+from .strategies import CostCascadingStrategy, JevRoutingStrategy, LLMJudgeStrategy, RuleBasedStrategy
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 load_dotenv()
@@ -53,6 +53,8 @@ class SmartRouter:
             "llm_judge": LLMJudgeStrategy(),
             "cascade": CostCascadingStrategy(),
             "cost_cascading": CostCascadingStrategy(),
+            "jev": JevRoutingStrategy(),
+            "system_one": JevRoutingStrategy(),
         }
 
     def set_strategy(self, strategy: RoutingStrategy) -> None:

@@ -20,9 +20,16 @@ if str(WEEK1_DIR) not in sys.path:
     sys.path.insert(0, str(WEEK1_DIR))
 
 from storage import Chunk, InMemoryVectorStore, PgVectorStore, VectorStoreFactory
-from guardrails import InputGuardrails, OutputGuardrails, PIIAction
+from guardrails import InputGuardrails, JevGroundednessFilter, JevSafetyFilter, OutputGuardrails, PIIAction
 from caching import SemanticCache
-from routing import RoutingDecision, RuleBasedStrategy, SmartRouter, CHEAP, SMART
+from routing import (
+    CHEAP,
+    SMART,
+    JevRoutingStrategy,
+    RoutingDecision,
+    RuleBasedStrategy,
+    SmartRouter,
+)
 from tools import (
     BaseTool,
     GitHubApiTool,
@@ -108,6 +115,16 @@ class TestGuardrailsChainOfResponsibility(unittest.TestCase):
         self.assertLess(res_bad.groundedness_score, 0.25)
         self.assertTrue(any("LOW_GROUNDEDNESS" in v for v in res_bad.violations))
 
+    def test_jev_safety_filter(self):
+        filter_jev = JevSafetyFilter()
+        self.assertIsNotNone(filter_jev)
+        ctx = filter_jev.process(self.inp_guard.pipeline.execute("Harmless text prompt."))
+        self.assertTrue(ctx.passed)
+
+    def test_jev_groundedness_filter(self):
+        filter_g = JevGroundednessFilter()
+        self.assertIsNotNone(filter_g)
+
 
 class TestRoutingStrategyPattern(unittest.TestCase):
     """Verifies Strategy Pattern in SmartRouter."""
@@ -126,6 +143,28 @@ class TestRoutingStrategyPattern(unittest.TestCase):
         )
         dec = self.router.route(prompt, strategy_name="rules")
         self.assertEqual(dec.selected_model, SMART)
+
+    def test_jev_routing_strategy_simple(self):
+        jev_strat = JevRoutingStrategy()
+        dec = jev_strat.route("What is 2 + 2?")
+        self.assertEqual(dec.selected_model, CHEAP)
+        self.assertGreaterEqual(dec.confidence, 0.80)
+        self.assertEqual(dec.strategy_name, "jev")
+
+    def test_jev_routing_strategy_complex(self):
+        jev_strat = JevRoutingStrategy()
+        prompt = (
+            "Please analyze and optimize this function architecture step-by-step:\n"
+            "```python\ndef refactor(): pass\n```"
+        )
+        dec = jev_strat.route(prompt)
+        self.assertEqual(dec.selected_model, SMART)
+        self.assertGreaterEqual(dec.confidence, 0.85)
+
+    def test_router_select_jev(self):
+        dec = self.router.route("What is the capital of Japan?", strategy_name="jev")
+        self.assertEqual(dec.selected_model, CHEAP)
+        self.assertEqual(dec.strategy_name, "jev")
 
 
 class TestToolAndMCPRegistry(unittest.TestCase):
@@ -294,6 +333,13 @@ class TestOrchestrator(unittest.TestCase):
         retrieved = self.orchestrator.get_pending_action(action.action_id)
         self.assertIsNotNone(retrieved)
         self.assertEqual(retrieved.action_id, action.action_id)
+
+    def test_orchestrator_infer_target_docs(self):
+        docs = self.orchestrator._infer_target_docs("How to use takeown and icacls for SeTakeOwnershipPrivilege?")
+        self.assertTrue(any("SeTakeOwnershipPrivilege" in d for d in docs))
+
+        docs_pg = self.orchestrator._infer_target_docs("PostgreSQL pentest using hashcat")
+        self.assertTrue(any("PostgreSQL" in d for d in docs_pg))
 
 
 if __name__ == "__main__":
