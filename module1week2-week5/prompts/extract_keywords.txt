@@ -1,0 +1,6 @@
+Extract the 5 most important keywords from the following text.
+
+Return only the keywords as a comma-separated list.
+
+Text:
+{text}

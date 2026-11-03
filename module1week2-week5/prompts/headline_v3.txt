@@ -1,0 +1,11 @@
+Generate one concise and engaging headline
+for the following text.
+
+Requirements:
+- Maximum 12 words.
+- Professional tone.
+- Accurately represent the content.
+- Do not introduce unsupported claims.
+
+Text:
+{text}
