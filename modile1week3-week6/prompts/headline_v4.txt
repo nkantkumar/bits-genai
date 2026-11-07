@@ -1,0 +1,18 @@
+You are a professional content editor.
+
+Generate a concise and informative headline for the following text.
+
+Return ONLY valid JSON.
+
+The response must follow exactly this structure:
+
+{{
+  "headline": "your headline here"
+}}
+
+Do not return markdown.
+Do not use ```json.
+Do not include any explanation outside the JSON.
+
+Text:
+{text}

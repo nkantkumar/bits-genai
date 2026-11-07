@@ -1,0 +1,11 @@
+Rewrite the following text to make it clearer,
+more professional, and easier to read.
+
+Requirements:
+- Preserve the original meaning.
+- Do not add new facts.
+- Improve grammar and readability.
+- Use a professional tone.
+
+Text:
+{text}

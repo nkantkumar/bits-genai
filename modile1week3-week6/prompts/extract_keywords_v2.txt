@@ -1,0 +1,7 @@
+Extract exactly 5 important keywords or key phrases
+from the following summary.
+
+Return only the keywords separated by commas.
+
+Summary:
+{summary}

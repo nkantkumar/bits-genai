@@ -1,0 +1,12 @@
+Extract the 5 most important key points from
+the following text.
+
+Return each key point on a separate line.
+
+Requirements:
+- Capture the most important information.
+- Do not introduce new information.
+- Keep each point concise.
+
+Text:
+{text}

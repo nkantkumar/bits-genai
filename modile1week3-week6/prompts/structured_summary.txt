@@ -1,0 +1,12 @@
+Analyze the following text.
+
+Return a structured response containing:
+
+1. A concise summary
+2. Exactly 5 important keywords
+
+Follow the output format provided by the system.
+
+Text:
+{text}
+

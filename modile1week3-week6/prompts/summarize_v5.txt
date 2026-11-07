@@ -1,0 +1,18 @@
+You are a professional summarization assistant.
+
+Summarize the following text.
+
+Return ONLY valid JSON.
+
+The response must follow exactly this structure:
+
+{{
+  "summary": "your summary here"
+}}
+
+Do not return markdown.
+Do not use ```json.
+Do not include any explanation outside the JSON.
+
+Text:
+{text}
