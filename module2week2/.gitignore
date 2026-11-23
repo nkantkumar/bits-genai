@@ -1,0 +1,10 @@
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+chunks.jsonl
+index.faiss
+index.faiss.chunks.json
+qdrant_storage/
+.DS_Store
